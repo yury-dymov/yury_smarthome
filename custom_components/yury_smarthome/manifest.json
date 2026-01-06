@@ -1,0 +1,24 @@
+{
+  "domain": "yury_smarthome",
+  "name": "Yury Agent For SmartHome",
+  "codeowners": [
+    "@yury-dymov"
+  ],
+  "config_flow": true,
+  "dependencies": [
+    "conversation",
+    "history",
+    "recorder",
+    "rest",
+    "scrape"
+  ],
+  "documentation": "https://github.com/yury-dymov/yury_smarthome",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/yury-dymov/yury_smarthome/issues",
+  "requirements": [
+    "ollama~=0.6.1",
+    "jinja2~=3.1.6"
+  ],
+  "version": "0.0.1"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "Yury Smarthome",
+  "render_readme": false,
+  "content_in_root": false,
+  "country": ["US"],
+  "homeassistant": "2025.10.0"
+}
