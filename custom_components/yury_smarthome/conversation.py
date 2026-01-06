@@ -114,7 +114,7 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
         llm_response = await self.send_message(prompt)
         intent_response = intent.IntentResponse(language=user_input.language)
         await self.skill_registry.process_user_request(
-            llm_response, user_input.text, intent_response
+            llm_response, user_input, intent_response
         )
         return ConversationResult(
             response=intent_response, conversation_id=user_input.conversation_id

@@ -2,6 +2,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.yury_smarthome.entity import LocalLLMEntity
 from abc import abstractmethod
 from homeassistant.helpers import intent
+from homeassistant.components.conversation import ConversationInput
 
 
 class AbstractSkill:
@@ -17,5 +18,7 @@ class AbstractSkill:
         """Returns skill name"""
 
     @abstractmethod
-    async def process_user_request(self, request: str, response: intent.IntentResponse):
+    async def process_user_request(
+        self, request: ConversationInput, response: intent.IntentResponse
+    ):
         """Proccesses user request"""

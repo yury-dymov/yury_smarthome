@@ -4,6 +4,7 @@ from custom_components.yury_smarthome.entity import LocalLLMEntity
 from .abstract_skill import AbstractSkill
 from .control_devices import ControlDevices
 import json
+from homeassistant.components.conversation import ConversationInput
 
 
 class SkillRegistry:
@@ -21,7 +22,10 @@ class SkillRegistry:
         return ", ".join(names)
 
     async def process_user_request(
-        self, llm_response: str, original_request: str, response: intent.IntentResponse
+        self,
+        llm_response: str,
+        original_request: ConversationInput,
+        response: intent.IntentResponse,
     ):
         skill = self.registry[llm_response]
         if skill is not None:

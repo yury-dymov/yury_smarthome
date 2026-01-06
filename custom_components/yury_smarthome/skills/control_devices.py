@@ -7,13 +7,16 @@ import os
 import aiofiles
 from jinja2 import Template
 from homeassistant.helpers import intent
+from homeassistant.components.conversation import ConversationInput
 
 
 class ControlDevices(AbstractSkill):
     def name(self) -> str:
         return "Control Devices Other Than Music"
 
-    async def process_user_request(self, request: str, response: intent.IntentResponse):
+    async def process_user_request(
+        self, request: ConversationInput, response: intent.IntentResponse
+    ):
         entities = []
 
         er = entity_registry.async_get(self.hass)
@@ -21,6 +24,7 @@ class ControlDevices(AbstractSkill):
         ar = area_registry.async_get(self.hass)
         entity_dict = {}
         device_dict = {}
+        user_location = None
 
         for state in self.hass.states.async_all():
             if not async_should_expose(self.hass, conversation.DOMAIN, state.entity_id):
@@ -61,6 +65,8 @@ class ControlDevices(AbstractSkill):
                     attributes["area_id"] = area.id
                     attributes["area_name"] = area.name
                     entry["area"] = area.name
+                    if device and device.id == request.device_id:
+                        user_location = area.name
 
             entities.append(entry)
 
@@ -70,7 +76,9 @@ class ControlDevices(AbstractSkill):
             template = Template(await file.read(), trim_blocks=True)
 
         prompt = template.render(
-            device_list=device_list, user_prompt=request, user_location="Kitchen"
+            device_list=device_list,
+            user_prompt=request.text,
+            user_location=user_location,
         )
 
         llm_response = await self.client.send_message(prompt)
