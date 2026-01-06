@@ -22,3 +22,7 @@ class AbstractSkill:
         self, request: ConversationInput, response: intent.IntentResponse
     ):
         """Proccesses user request"""
+
+    @abstractmethod
+    async def undo(self, response: intent.IntentResponse):
+        """Revert the last action"""
