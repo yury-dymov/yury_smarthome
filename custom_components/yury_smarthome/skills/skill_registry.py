@@ -1,20 +1,27 @@
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 from custom_components.yury_smarthome.entity import LocalLLMEntity
+from custom_components.yury_smarthome.prompt_cache import PromptCache
+from custom_components.yury_smarthome.maybe import maybe
 from .abstract_skill import AbstractSkill
 from .control_devices import ControlDevices
-import json
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
 from datetime import datetime
+from custom_components.yury_smarthome.qpl import QPLFlow
 
 
 class SkillRegistry:
     registry: dict[str, AbstractSkill]
     history: dict[str, Tuple[datetime, str]]
 
-    def __init__(self, hass: HomeAssistant, client: LocalLLMEntity):
-        skills = [ControlDevices(hass, client)]
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: LocalLLMEntity,
+        prompt_cache: PromptCache,
+    ):
+        skills = [ControlDevices(hass, client, prompt_cache)]
         registry = {}
         for skill in skills:
             registry[skill.name()] = skill
@@ -30,16 +37,22 @@ class SkillRegistry:
         llm_response: str,
         original_request: ConversationInput,
         response: intent.IntentResponse,
+        qpl_flow: QPLFlow,
     ):
         if llm_response == "Undo":
+            point = qpl_flow.mark_subspan_begin("undo")
             skill = self._get_skill_from_history(original_request)
+            maybe(point).annotate("skill", skill.name())
             if skill is None:
-                response.async_set_speech("Can't undo or too much time passed")
+                err = "Can't undo or too much time passed"
+                qpl_flow.mark_failed(err)
+                response.async_set_speech(err)
                 return
             conversation_id = original_request.conversation_id
             if conversation_id is not None:
                 del self.history[conversation_id]
-            await skill.undo(response)
+            await skill.undo(response, qpl_flow)
+            qpl_flow.mark_subspan_end("undo")
             return
 
         skill = self.registry[llm_response]
@@ -47,7 +60,9 @@ class SkillRegistry:
             conversation_id = original_request.conversation_id
             if conversation_id is not None:
                 self.history[conversation_id] = (datetime.now(), llm_response)
-            await skill.process_user_request(original_request, response)
+            await skill.process_user_request(original_request, response, qpl_flow)
+        else:
+            raise UnknownSkillException
 
     def _get_skill_from_history(
         self, original_request: ConversationInput
@@ -62,3 +77,7 @@ class SkillRegistry:
         if (datetime.now() - history_pair[0]).total_seconds() <= 30:
             return self.registry[history_pair[1]]
         return None
+
+
+class UnknownSkillException(Exception):
+    pass

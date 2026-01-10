@@ -4,10 +4,12 @@ from homeassistant.components.homeassistant.exposed_entities import async_should
 from homeassistant.helpers import entity_registry, area_registry, device_registry
 import json
 import os
-import aiofiles
 from jinja2 import Template
 from homeassistant.helpers import intent
 from homeassistant.components.conversation import ConversationInput
+from custom_components.yury_smarthome.qpl import QPLFlow
+from custom_components.yury_smarthome.maybe import maybe
+from custom_components.yury_smarthome.prompt_cache import PromptCache
 
 
 class ControlDevices(AbstractSkill):
@@ -17,8 +19,101 @@ class ControlDevices(AbstractSkill):
         return "Control Devices Other Than Music"
 
     async def process_user_request(
-        self, request: ConversationInput, response: intent.IntentResponse
+        self,
+        request: ConversationInput,
+        response: intent.IntentResponse,
+        qpl_flow: QPLFlow,
     ):
+        qpl_flow.mark_subspan_begin("building_prompt")
+        prompt = await self._build_prompt(request)
+        point = qpl_flow.mark_subspan_end("building_prompt")
+        maybe(point).annotate("prompt", prompt)
+        qpl_flow.mark_subspan_begin("sending_message_to_llm")
+        llm_response = await self.client.send_message(prompt)
+        point = qpl_flow.mark_subspan_end("sending_message_to_llm")
+        llm_response = llm_response.replace("```json", "")
+        llm_response = llm_response.replace("```", "")
+        maybe(point).annotate("llm_response", llm_response)
+        did_something = False
+        try:
+            json_data = json.loads(llm_response)
+            for device in json_data["devices"]:
+                entity_id = device["entity_id"]
+                action = device["action"]
+                if entity_id is None or action is None:
+                    continue
+                if action == "turn on":
+                    action_intent = intent.INTENT_TURN_ON
+                elif action == "turn off":
+                    action_intent = intent.INTENT_TURN_OFF
+                else:
+                    continue
+                did_something = True
+                intent_item = intent.Intent(
+                    self.hass,
+                    "yury",
+                    action_intent,
+                    {"name": {"value": entity_id}},
+                    None,
+                    intent.Context(),
+                    request.language,
+                )
+                point = qpl_flow.mark_subspan_begin("sending_intent")
+                maybe(point).annotate("action", action_intent)
+                maybe(point).annotate("entity_id", entity_id)
+                handler = self.hass.data.get(intent.DATA_KEY, {}).get(action_intent)
+                await handler.async_handle(intent_item)
+                qpl_flow.mark_subspan_end("sending_intent")
+                self.intents.append(intent_item)
+
+            if did_something:
+                response.async_set_speech("All done")
+            else:
+                response.async_set_speech("Didn't find any device")
+        except json.JSONDecodeError as e:
+            qpl_flow.mark_failed(e.msg)
+            response.async_set_speech("Failed")
+
+    async def undo(self, response: intent.IntentResponse, qpl_flow: QPLFlow):
+        point = qpl_flow.mark_subspan_begin("control_devices_undo")
+        if len(self.intents) == 0:
+            maybe(point).annotate("no intents")
+            response.async_set_speech("All done")
+            point = qpl_flow.mark_subspan_end("control_devices_undo")
+            return
+
+        for intent_elem in self.intents:
+            if intent_elem.intent_type == intent.INTENT_TURN_ON:
+                intent_elem.intent_type = intent.INTENT_TURN_OFF
+            elif intent_elem.intent_type == intent.INTENT_TURN_OFF:
+                intent_elem.intent_type = intent.INTENT_TURN_ON
+            else:
+                err = (
+                    "Unsupported intent to undo in control devices skill: "
+                    + intent_elem.intent_type
+                )
+                response.async_set_speech(err)
+                qpl_flow.mark_failed(err)
+                return
+
+            point = qpl_flow.mark_subspan_begin("undo_action")
+            handler = self.hass.data.get(intent.DATA_KEY, {}).get(
+                intent_elem.intent_type
+            )
+            maybe(point).annotate("intent_type", intent_elem.intent_type)
+            maybe(point).annotate("entity_id", intent_elem.slots["name"]["value"])
+            undo_response = await handler.async_handle(intent_elem)
+            point = qpl_flow.mark_subspan_end("undo_action")
+            maybe(point).annotate("result", undo_response.response_type.value)
+
+        response.async_set_speech("All done")
+        self.intents = []
+        point = qpl_flow.mark_subspan_end("control_devices_undo")
+
+    async def _build_prompt(
+        self,
+        request: ConversationInput,
+    ) -> str:
         entities = []
         self.intents = []
         er = entity_registry.async_get(self.hass)
@@ -39,6 +134,9 @@ class ControlDevices(AbstractSkill):
             if entity and entity.device_id:
                 device = dr.async_get(entity.device_id)
                 device_dict[state.entity_id] = entity.device_id
+
+            if state.state not in {"on", "off"}:
+                continue
 
             attributes = dict(state.attributes)
             attributes["state"] = state.state
@@ -73,75 +171,12 @@ class ControlDevices(AbstractSkill):
             entities.append(entry)
 
         device_list = json.dumps(entities)
-        file_path = os.path.join(os.path.dirname(__file__), "control_devices.md")
-        async with aiofiles.open(file_path, mode="r") as file:
-            template = Template(await file.read(), trim_blocks=True)
+        prompt_key = os.path.join(os.path.dirname(__file__), "control_devices.md")
+        prompt_template = await self.prompt_cache.get(prompt_key)
+        template = Template(prompt_template, trim_blocks=True)
 
-        prompt = template.render(
+        return template.render(
             device_list=device_list,
             user_prompt=request.text,
             user_location=user_location,
         )
-
-        llm_response = await self.client.send_message(prompt)
-        did_something = False
-        try:
-            llm_response = llm_response.replace("```json", "")
-            llm_response = llm_response.replace("```", "")
-            json_data = json.loads(llm_response)
-            for device in json_data["devices"]:
-                entity_id = device["entity_id"]
-                action = device["action"]
-                if entity_id is None or action is None:
-                    continue
-                if action == "turn on":
-                    action_intent = intent.INTENT_TURN_ON
-                elif action == "turn off":
-                    action_intent = intent.INTENT_TURN_OFF
-                else:
-                    continue
-                did_something = True
-                intent_item = intent.Intent(
-                    self.hass,
-                    "yury",
-                    action_intent,
-                    {"name": {"value": entity_id}},
-                    None,
-                    intent.Context(),
-                    request.language,
-                )
-                handler = self.hass.data.get(intent.DATA_KEY, {}).get(action_intent)
-                await handler.async_handle(intent_item)
-                self.intents.append(intent_item)
-
-            if did_something:
-                response.async_set_speech("All done")
-            else:
-                response.async_set_speech("Didn't find any device")
-        except json.JSONDecodeError as e:
-            response.async_set_speech("Failed")
-
-    async def undo(self, response: intent.IntentResponse):
-        if len(self.intents) == 0:
-            response.async_set_speech("All done")
-            return
-
-        for intent_elem in self.intents:
-            if intent_elem.intent_type == intent.INTENT_TURN_ON:
-                intent_elem.intent_type = intent.INTENT_TURN_OFF
-            elif intent_elem.intent_type == intent.INTENT_TURN_OFF:
-                intent_elem.intent_type = intent.INTENT_TURN_ON
-            else:
-                response.async_set_speech(
-                    "Unsupported intent to undo in control devices skill: "
-                    + intent_elem.intent_type
-                )
-                return
-
-            handler = self.hass.data.get(intent.DATA_KEY, {}).get(
-                intent_elem.intent_type
-            )
-            await handler.async_handle(intent_elem)
-
-        response.async_set_speech("All done")
-        self.intents = []
