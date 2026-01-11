@@ -77,6 +77,8 @@ class QPLFlow:
 
     def mark_success(self):
         if self.outcome == "":
+            for subspan in list(reversed(self.opened_subspans)):
+                self.mark_subspan_end(subspan)
             self.ended = datetime.now(timezone.utc)
             self.outcome = "SUCCESS"
 
