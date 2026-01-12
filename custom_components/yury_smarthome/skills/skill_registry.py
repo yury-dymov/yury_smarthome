@@ -5,6 +5,7 @@ from custom_components.yury_smarthome.prompt_cache import PromptCache
 from custom_components.yury_smarthome.maybe import maybe
 from .abstract_skill import AbstractSkill
 from .control_devices import ControlDevices
+from .shopping_list import ShoppingList
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
 from datetime import datetime
@@ -21,7 +22,10 @@ class SkillRegistry:
         client: LocalLLMEntity,
         prompt_cache: PromptCache,
     ):
-        skills = [ControlDevices(hass, client, prompt_cache)]
+        skills = [
+            ControlDevices(hass, client, prompt_cache),
+            ShoppingList(hass, client, prompt_cache),
+        ]
         registry = {}
         for skill in skills:
             registry[skill.name()] = skill

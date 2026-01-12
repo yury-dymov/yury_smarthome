@@ -88,8 +88,10 @@ class QPLFlow:
             self.outcome = "FAILED"
             self.annotate("error", error)
 
-    def mark_canceled(self):
+    def mark_canceled(self, annotation: str | None = None):
         if self.outcome == "":
+            if annotation is not None:
+                self.annotate("cancelation_reason", annotation)
             self.ended = datetime.now(timezone.utc)
             self.outcome = "CANCELED"
 
