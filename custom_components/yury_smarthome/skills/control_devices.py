@@ -25,7 +25,7 @@ class ControlDevices(AbstractSkill):
         qpl_flow: QPLFlow,
     ):
         qpl_flow.mark_subspan_begin("building_prompt")
-        prompt = await self._build_prompt(request)
+        prompt = await self._build_prompt(request, qpl_flow)
         point = qpl_flow.mark_subspan_end("building_prompt")
         maybe(point).annotate("prompt", prompt)
         qpl_flow.mark_subspan_begin("sending_message_to_llm")
