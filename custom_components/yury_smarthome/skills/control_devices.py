@@ -37,7 +37,7 @@ class ControlDevices(AbstractSkill):
         did_something = False
         try:
             json_data = json.loads(llm_response)
-            for device in json_data["items"]:
+            for device in json_data["devices"]:
                 entity_id = device["entity_id"]
                 action = device["action"]
                 if entity_id is None or action is None:
