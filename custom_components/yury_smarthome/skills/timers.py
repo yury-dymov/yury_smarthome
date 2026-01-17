@@ -152,7 +152,8 @@ class Timers(AbstractSkill):
                     _LOGGER.info(f"TTS notification sent to {target}: {message}")
                 except Exception:
                     qpl_flow.mark_subspan_end("send_tts")
-                    _LOGGER.warning(f"Failed to send TTS notification to {target}")
+                    qpl_flow.mark_failed(traceback.format_exc())
+                    return
             else:
                 qpl_flow.mark_subspan_end("notify_timer_finished")
                 qpl_flow.mark_failed("no target found to send tts")
