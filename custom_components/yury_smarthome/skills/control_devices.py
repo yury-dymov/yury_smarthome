@@ -10,6 +10,7 @@ from homeassistant.components.conversation import ConversationInput
 from custom_components.yury_smarthome.qpl import QPLFlow
 from custom_components.yury_smarthome.maybe import maybe
 from custom_components.yury_smarthome.prompt_cache import PromptCache
+import traceback
 
 
 class ControlDevices(AbstractSkill):
@@ -73,6 +74,9 @@ class ControlDevices(AbstractSkill):
         except json.JSONDecodeError as e:
             qpl_flow.mark_failed(e.msg)
             response.async_set_speech("Failed")
+        except Exception as e:
+            qpl_flow.mark_failed(traceback.format_exc())
+            response.async_set_speech("Failed to control devices")
 
     async def undo(self, response: intent.IntentResponse, qpl_flow: QPLFlow):
         point = qpl_flow.mark_subspan_begin("control_devices_undo")

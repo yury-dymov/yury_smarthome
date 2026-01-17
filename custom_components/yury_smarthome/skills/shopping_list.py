@@ -14,6 +14,7 @@ from homeassistant.components.todo.intent import (
 from custom_components.yury_smarthome.qpl import QPLFlow
 from custom_components.yury_smarthome.maybe import maybe
 from custom_components.yury_smarthome.prompt_cache import PromptCache
+import traceback
 
 
 class ShoppingList(AbstractSkill):
@@ -85,6 +86,9 @@ class ShoppingList(AbstractSkill):
             response.async_set_speech(answer)
         except json.JSONDecodeError as e:
             qpl_flow.mark_failed(e.msg)
+            response.async_set_speech("Failed")
+        except Exception as e:
+            qpl_flow.mark_failed(traceback.format_exc())
             response.async_set_speech("Failed")
 
     def _build_answer(self, action: str, items: list[str]) -> str:
