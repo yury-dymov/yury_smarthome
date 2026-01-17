@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 import threading
 import time
 import copy
@@ -31,6 +31,18 @@ class QPLPointEncoder(json.JSONEncoder):
         }
 
 
+class QPLFlowEncoder(json.JSONEncoder):
+    def encode(self, o):
+        return {
+            "name": o.name,
+            "points": list(map(lambda p: QPLPointEncoder().encode(p), o.points)),
+            "annotations": o.payload,
+            "outcome": o.outcome,
+            "started": o.start.astimezone().isoformat(),
+            "ended": o.ended.astimezone().isoformat() if o.ended else "-1",
+        }
+
+
 class QPLFlow:
     name: str
     payload: dict[str, Any]
@@ -38,6 +50,7 @@ class QPLFlow:
     outcome: str = ""
     start: datetime
     ended: datetime | None = None
+    complete_callback: Callable
 
     def __init__(self, nm: str):
         self.name = nm
@@ -81,12 +94,14 @@ class QPLFlow:
                 self.mark_subspan_end(subspan)
             self.ended = datetime.now(timezone.utc)
             self.outcome = "SUCCESS"
+            self.complete_callback(self)
 
     def mark_failed(self, error: str):
         if self.outcome == "":
             self.ended = datetime.now(timezone.utc)
             self.outcome = "FAILED"
             self.annotate("error", error)
+            self.complete_callback(self)
 
     def mark_canceled(self, annotation: str | None = None):
         if self.outcome == "":
@@ -94,18 +109,7 @@ class QPLFlow:
                 self.annotate("cancelation_reason", annotation)
             self.ended = datetime.now(timezone.utc)
             self.outcome = "CANCELED"
-
-
-class QPLFlowEncoder(json.JSONEncoder):
-    def encode(self, o):
-        return {
-            "name": o.name,
-            "points": list(map(lambda p: QPLPointEncoder().encode(p), o.points)),
-            "annotations": o.payload,
-            "outcome": o.outcome,
-            "started": o.start.astimezone().isoformat(),
-            "ended": o.ended.astimezone().isoformat() if o.ended else "-1",
-        }
+            self.complete_callback(self)
 
 
 class QPLService:
@@ -149,10 +153,11 @@ class QPL:
         self.service = QPLService("http://zeus.loc:8124")
 
     def create_flow(self, name: str) -> QPLFlow:
-        return QPLFlow(name)
-
-    def add_completed_flow_to_upload_queue(self, flow: QPLFlow):
-        self.service.add_flow_to_upload_queue(flow)
+        flow = QPLFlow(name)
+        flow.complete_callback = lambda flow: self.service.add_flow_to_upload_queue(
+            flow
+        )
+        return flow
 
 
 class QPLAttemptedToEndAlreadyEndedSubspan(Exception):

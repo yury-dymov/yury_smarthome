@@ -185,7 +185,6 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
 
         result = await self._async_process(user_input, qpl_flow)
         qpl_flow.mark_subspan_end("async_process")
-        self.qplProvider.add_completed_flow_to_upload_queue(qpl_flow)
         return result
 
     def _make_prompt_key(self, name: str) -> str:
