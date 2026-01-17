@@ -142,6 +142,8 @@ class Timers(AbstractSkill):
                         "tts",
                         "speak",
                         {
+                            "entity_id": "stt.faster_whisper_2",
+                            "language": "en",
                             "media_player_entity_id": target,
                             "message": message,
                         },
