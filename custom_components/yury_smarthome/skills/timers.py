@@ -142,7 +142,7 @@ class Timers(AbstractSkill):
                         "tts",
                         "speak",
                         {
-                            "entity_id": target,
+                            "media_player_entity_id": target,
                             "message": message,
                         },
                         blocking=False,
