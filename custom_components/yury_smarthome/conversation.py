@@ -86,7 +86,7 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
 
         self.qplProvider = qplProvider
         self.prompts = PromptCache()
-        self.skill_registry = SkillRegistry(hass, self, self.prompts)
+        self.skill_registry = SkillRegistry(hass, self, self.prompts, qplProvider)
 
         if subentry.data.get(CONF_LLM_HASS_API):
             self._attr_supported_features = (

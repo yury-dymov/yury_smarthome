@@ -10,7 +10,7 @@ from .timers import Timers
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
 from datetime import datetime
-from custom_components.yury_smarthome.qpl import QPLFlow
+from custom_components.yury_smarthome.qpl import QPL, QPLFlow
 
 
 class SkillRegistry:
@@ -22,11 +22,12 @@ class SkillRegistry:
         hass: HomeAssistant,
         client: LocalLLMEntity,
         prompt_cache: PromptCache,
+        qpl_provider: QPL,
     ):
         skills = [
             ControlDevices(hass, client, prompt_cache),
             ShoppingList(hass, client, prompt_cache),
-            Timers(hass, client, prompt_cache),
+            Timers(hass, client, prompt_cache, qpl_provider),
         ]
         registry = {}
         for skill in skills:

@@ -1,16 +1,23 @@
 from .abstract_skill import AbstractSkill
 from homeassistant.components import conversation
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
+from homeassistant.core import HomeAssistant, Event, callback
+from homeassistant.const import EVENT_STATE_CHANGED
 import json
 import os
 import re
+import logging
 from dataclasses import dataclass
 from jinja2 import Template
-from homeassistant.helpers import intent
+from homeassistant.helpers import intent, entity_registry, device_registry
 from homeassistant.components.conversation import ConversationInput
-from custom_components.yury_smarthome.qpl import QPLFlow
+from custom_components.yury_smarthome.entity import LocalLLMEntity
+from custom_components.yury_smarthome.prompt_cache import PromptCache
+from custom_components.yury_smarthome.qpl import QPL, QPLFlow
 from custom_components.yury_smarthome.maybe import maybe
 import traceback
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -20,11 +27,155 @@ class TimerAction:
     duration: str | None = None
 
 
+@dataclass
+class TrackedTimer:
+    entity_id: str
+    device_id: str | None
+    friendly_name: str
+
+
 class Timers(AbstractSkill):
     last_action: TimerAction | None = None
+    qpl_provider: QPL
+    # Track timers we started: entity_id -> TrackedTimer
+    _tracked_timers: dict[str, TrackedTimer] = {}
+    _listener_registered: bool = False
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        client: LocalLLMEntity,
+        prompt_cache: PromptCache,
+        qpl_provider: QPL,
+    ):
+        super().__init__(hass, client, prompt_cache)
+        self.qpl_provider = qpl_provider
+        self._register_timer_listener()
 
     def name(self) -> str:
         return "Timers"
+
+    def _register_timer_listener(self):
+        """Register the timer finished event listener."""
+        @callback
+        def _handle_timer_state_change(event: Event):
+            """Handle timer state changes to detect when our timers finish."""
+            entity_id = event.data.get("entity_id", "")
+            if not entity_id.startswith("timer."):
+                return
+
+            new_state = event.data.get("new_state")
+            old_state = event.data.get("old_state")
+
+            if old_state is None or new_state is None:
+                return
+
+            # Check if timer just finished (went from active to idle)
+            if old_state.state == "active" and new_state.state == "idle":
+                self._on_timer_finished(entity_id)
+
+        self.hass.bus.async_listen(EVENT_STATE_CHANGED, _handle_timer_state_change)
+        Timers._listener_registered = True
+        _LOGGER.debug("Timer state change listener registered")
+
+    def _on_timer_finished(self, entity_id: str):
+        """Called when a timer finishes. Notify user if it's one we started."""
+        tracked = Timers._tracked_timers.get(entity_id)
+        if tracked is None:
+            _LOGGER.debug(f"Timer {entity_id} finished but was not tracked by us")
+            return
+
+        # Create QPL flow for this timer finished event
+        qpl_flow = self.qpl_provider.create_flow("timer_finished")
+        point = qpl_flow.mark_subspan_begin("on_timer_finished")
+        maybe(point).annotate("entity_id", entity_id)
+        maybe(point).annotate("friendly_name", tracked.friendly_name)
+        maybe(point).annotate("device_id", tracked.device_id)
+        _LOGGER.info(f"Our timer {entity_id} finished, notifying user")
+
+        # Remove from tracked timers
+        del Timers._tracked_timers[entity_id]
+
+        # Use TTS to notify on the device that started the timer
+        try:
+            qpl_flow.mark_subspan_begin("create_timer_finished_task")
+            self.hass.async_create_task(
+                self._notify_timer_finished(tracked, qpl_flow)
+            )
+            qpl_flow.mark_subspan_begin("create_timer_finished_end")
+            qpl_flow.mark_subspan_end("on_timer_finished")
+        except Exception as e:
+            qpl_flow.mark_failed(traceback.format_exc())
+
+    async def _notify_timer_finished(self, tracked: TrackedTimer, qpl_flow: QPLFlow):
+        """Notify the user via TTS that their timer has finished."""
+        message = f"{tracked.friendly_name} timer finished"
+        point = qpl_flow.mark_subspan_begin("notify_timer_finished")
+        maybe(point).annotate("message", message)
+
+        # Try to use TTS on the device that started the timer
+        if tracked.device_id:
+            qpl_flow.mark_subspan_begin("find_tts_target")
+            # Find media_player entities associated with this device
+            target = await self._get_tts_target_for_device(tracked.device_id)
+            point = qpl_flow.mark_subspan_end("find_tts_target")
+
+            if target:
+                maybe(point).annotate("tts_target", target)
+                qpl_flow.mark_subspan_begin("send_tts")
+                try:
+                    await self.hass.services.async_call(
+                        "tts",
+                        "speak",
+                        {
+                            "entity_id": target,
+                            "message": message,
+                        },
+                        blocking=False,
+                    )
+                    qpl_flow.mark_subspan_end("send_tts")
+                    qpl_flow.mark_success()
+                    self.qpl_provider.add_completed_flow_to_upload_queue(qpl_flow)
+                    _LOGGER.info(f"TTS notification sent to {target}: {message}")
+                    return
+                except Exception:
+                    qpl_flow.mark_subspan_end("send_tts")
+                    qpl_flow.mark_failed(traceback.format_exc())
+                    self.qpl_provider.add_completed_flow_to_upload_queue(qpl_flow)
+                    _LOGGER.warning(f"Failed to send TTS notification to {target}")
+                    return
+        else:
+            qpl_flow.mark_subspan_end("find_tts_target")
+            qpl_flow.mark_failed("no device_id found")
+            self.qpl_provider.add_completed_flow_to_upload_queue(qpl_flow)
+            return
+
+
+    async def _get_tts_target_for_device(self, device_id: str) -> str | None:
+        """Find a media_player entity associated with the given device for TTS."""
+
+        er = entity_registry.async_get(self.hass)
+        dr = device_registry.async_get(self.hass)
+
+        # Get the device to find its area
+        device = dr.async_get(device_id)
+        if device is None:
+            return None
+
+        # Look for media_player entities in the same area or on the same device
+        for entity in er.entities.values():
+            if not entity.entity_id.startswith("media_player."):
+                continue
+
+            # Check if entity is on the same device
+            if entity.device_id == device_id:
+                return entity.entity_id
+
+            # Check if entity is in the same area
+            if device.area_id and entity.area_id == device.area_id:
+                return entity.entity_id
+
+        return None
 
     async def process_user_request(
         self,
@@ -54,7 +205,7 @@ class Timers(AbstractSkill):
             duration = json_data.get("duration")
 
             if action == "start":
-                await self._start_timer(entity_id, duration, response, qpl_flow)
+                await self._start_timer(entity_id, duration, request, response, qpl_flow)
             elif action == "cancel":
                 await self._cancel_timer(entity_id, response, qpl_flow)
             elif action == "pause":
@@ -62,10 +213,10 @@ class Timers(AbstractSkill):
             elif action == "resume":
                 await self._resume_timer(entity_id, response, qpl_flow)
 
-        except json.JSONDecodeError as e:
-            qpl_flow.mark_failed(e.msg)
+        except json.JSONDecodeError as err:
+            qpl_flow.mark_failed(err.msg)
             response.async_set_speech("Failed to understand timer request")
-        except Exception as e:
+        except Exception:
             qpl_flow.mark_failed(traceback.format_exc())
             response.async_set_speech("Failed to set timer")
 
@@ -73,6 +224,7 @@ class Timers(AbstractSkill):
         self,
         entity_id: str | None,
         duration: str | None,
+        request: ConversationInput,
         response: intent.IntentResponse,
         qpl_flow: QPLFlow,
     ):
@@ -103,12 +255,24 @@ class Timers(AbstractSkill):
             if entity_id:
                 self.last_action = TimerAction("start", entity_id, duration)
 
+                # Track this timer for notification when it finishes
+                # Get friendly name from the timer state
+                timer_state = self.hass.states.get(entity_id)
+                friendly_name = timer_state.name if timer_state else entity_id.replace("timer.", "").replace("_", " ").title()
+
+                Timers._tracked_timers[entity_id] = TrackedTimer(
+                    entity_id=entity_id,
+                    device_id=request.device_id,
+                    friendly_name=friendly_name,
+                )
+                _LOGGER.debug(f"Tracking timer {entity_id} from device {request.device_id}")
+
             qpl_flow.mark_subspan_end("start_timer")
 
             # Build friendly response
             friendly_duration = self._format_duration_friendly(duration)
             response.async_set_speech(f"Timer set for {friendly_duration}")
-        except Exception as e:
+        except Exception:
             qpl_flow.mark_failed(traceback.format_exc())
             response.async_set_speech("Failed to set timer")
 
@@ -139,6 +303,11 @@ class Timers(AbstractSkill):
 
         # Record action for undo
         self.last_action = TimerAction("cancel", entity_id, remaining_duration)
+
+        # Remove from tracked timers (no notification needed for cancelled timers)
+        if entity_id in Timers._tracked_timers:
+            del Timers._tracked_timers[entity_id]
+            _LOGGER.debug(f"Stopped tracking cancelled timer {entity_id}")
 
         qpl_flow.mark_subspan_end("cancel_timer")
         response.async_set_speech("Timer cancelled")
@@ -278,6 +447,9 @@ class Timers(AbstractSkill):
             await self.hass.services.async_call(
                 "timer", "cancel", {"entity_id": action.entity_id}, blocking=True
             )
+            # Remove from tracked timers
+            if action.entity_id in Timers._tracked_timers:
+                del Timers._tracked_timers[action.entity_id]
             response.async_set_speech("Timer cancelled")
 
         elif action.action == "cancel":
@@ -289,6 +461,7 @@ class Timers(AbstractSkill):
                     {"entity_id": action.entity_id, "duration": action.duration},
                     blocking=True,
                 )
+                # Note: We don't re-track this timer since we don't have the original device_id
                 response.async_set_speech("Timer restored")
             else:
                 response.async_set_speech("Cannot restore timer - duration unknown")

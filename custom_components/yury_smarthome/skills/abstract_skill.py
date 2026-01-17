@@ -1,7 +1,7 @@
 from homeassistant.core import HomeAssistant
 from custom_components.yury_smarthome.entity import LocalLLMEntity
 from custom_components.yury_smarthome.prompt_cache import PromptCache
-from custom_components.yury_smarthome.qpl import QPLFlow
+from custom_components.yury_smarthome.qpl import QPL, QPLFlow
 from abc import abstractmethod
 from homeassistant.helpers import intent
 from homeassistant.components.conversation import ConversationInput
@@ -13,7 +13,10 @@ class AbstractSkill:
     prompt_cache: PromptCache
 
     def __init__(
-        self, hass: HomeAssistant, client: LocalLLMEntity, prompt_cache: PromptCache
+        self,
+        hass: HomeAssistant,
+        client: LocalLLMEntity,
+        prompt_cache: PromptCache,
     ):
         self.hass = hass
         self.client = client
