@@ -44,8 +44,10 @@ async def _async_update_listener(
 
 async def async_unload_entry(hass: HomeAssistant, entry: LocalLLMConfigEntry) -> bool:
     """Unload the integration."""
-    hass.data[DOMAIN].pop(entry.entry_id)
-    return True
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, [Platform.CONVERSATION])
+    if unload_ok:
+        hass.data[DOMAIN].pop(entry.entry_id)
+    return unload_ok
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: LocalLLMConfigEntry):

@@ -112,7 +112,7 @@ class LocalLLMEntity(entity.Entity):
     @property
     def runtime_options(self) -> dict[str, Any]:
         """Return the runtime options for this entity."""
-        return {**self.entry.options, **self.subentry.data}
+        return {**self.entry.data, **self.subentry.data}
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
