@@ -35,9 +35,9 @@ class TrackedTimer:
 
 
 class Timers(AbstractSkill):
-    last_actions: list[TimerAction] = []
+    last_actions: list[TimerAction]
     qpl_provider: QPL
-    # Track timers we started: entity_id -> TrackedTimer
+    # Track timers we started: entity_id -> TrackedTimer (class-level, shared)
     _tracked_timers: dict[str, TrackedTimer] = {}
     _listener_registered: bool = False
 
@@ -50,6 +50,7 @@ class Timers(AbstractSkill):
     ):
         super().__init__(hass, client, prompt_cache)
         self.qpl_provider = qpl_provider
+        self.last_actions = []  # Instance variable, not shared
         self._register_timer_listener()
 
     def name(self) -> str:

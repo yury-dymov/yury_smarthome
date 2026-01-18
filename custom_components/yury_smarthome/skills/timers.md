@@ -28,7 +28,7 @@ The JSON response must be an ARRAY with this shape:
   {
     "action": "start" | "cancel" | "pause" | "resume",
     "entity_id": "timer.xxx",
-    "duration": "duration string" (required for start action, null for other actions),
+    "duration": "duration string" (required for start action, null for other actions). If user doesn't provide details like hours, minutes, seconds, deduce them by looking at previous entry.
     "context": "short description" or empty string
   }
 ]
