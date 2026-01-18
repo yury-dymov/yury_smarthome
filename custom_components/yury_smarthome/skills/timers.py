@@ -25,7 +25,7 @@ class TimerAction:
     action: str  # "start", "cancel", "pause", "resume"
     entity_id: str
     duration: str | None = None
-    friendly_name: str | None 
+    friendly_name: str | None = None
 
 
 @dataclass
