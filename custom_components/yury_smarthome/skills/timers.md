@@ -26,7 +26,7 @@ The JSON response must have this exact shape:
   "action": "start" | "cancel" | "pause" | "resume",
   "entity_id": "timer.xxx",
   "duration": "duration string" (required for start action, null for other actions),
-  "context": "short description" (required for start action, describes what timer is for)
+  "context": "short description". If you can deduce from prompt, then provide context. Otherwise return empty string. IF you are aiming to return "timer" better return empty string as otherwise user will hear "timer timer" which is stupid and annoying
 }
 
 Examples:
