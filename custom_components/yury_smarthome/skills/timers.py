@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import copy
 import traceback
 
 
@@ -24,6 +25,7 @@ class TimerAction:
     action: str  # "start", "cancel", "pause", "resume"
     entity_id: str
     duration: str | None = None
+    friendly_name: str | None 
 
 
 @dataclass
@@ -39,7 +41,6 @@ class Timers(AbstractSkill):
     qpl_provider: QPL
     # Track timers we started: entity_id -> TrackedTimer (class-level, shared)
     _tracked_timers: dict[str, TrackedTimer] = {}
-    _listener_registered: bool = False
 
     def __init__(
         self,
@@ -77,7 +78,6 @@ class Timers(AbstractSkill):
                 self._on_timer_finished(entity_id)
 
         self.hass.bus.async_listen(EVENT_STATE_CHANGED, _handle_timer_state_change)
-        Timers._listener_registered = True
         _LOGGER.debug("Timer state change listener registered")
 
     def _get_available_timer(self) -> str | None:
@@ -246,7 +246,7 @@ class Timers(AbstractSkill):
                         entity_id, duration, context, request, qpl_flow
                     )
                 elif action == "cancel":
-                    result = await self._cancel_timer(entity_id, qpl_flow)
+                    result = await self._cancel_timer(entity_id, context, qpl_flow)
                 elif action == "pause":
                     result = await self._pause_timer(entity_id, qpl_flow)
                 elif action == "resume":
@@ -307,7 +307,7 @@ class Timers(AbstractSkill):
             )
 
             # Record action for undo
-            self.last_actions.append(TimerAction("start", entity_id, duration))
+            self.last_actions.append(TimerAction("start", entity_id, duration, context))
 
             # Use context as friendly name, fall back to timer state name
             friendly_name = context if context else None
@@ -337,6 +337,7 @@ class Timers(AbstractSkill):
     async def _cancel_timer(
         self,
         entity_id: str | None,
+        context: str | None,
         qpl_flow: QPLFlow,
     ) -> str | None:
         point = qpl_flow.mark_subspan_begin("cancel_timer")
@@ -353,6 +354,9 @@ class Timers(AbstractSkill):
             remaining_duration = state.attributes["remaining"]
 
         maybe(point).annotate("entity_id", entity_id)
+        if entity_id in Timers._tracked_timers:
+            del Timers._tracked_timers[entity_id]
+
         await self.hass.services.async_call(
             "timer", "cancel", {"entity_id": entity_id}, blocking=True
         )
@@ -366,6 +370,8 @@ class Timers(AbstractSkill):
             _LOGGER.debug(f"Stopped tracking cancelled timer {entity_id}")
 
         qpl_flow.mark_subspan_end("cancel_timer")
+        if context is not None:
+            return f"Timer {context} cancelled"
         return "Timer cancelled"
 
     async def _pause_timer(
@@ -503,47 +509,21 @@ class Timers(AbstractSkill):
             return
 
         messages = []
-        # Undo actions in reverse order
-        for action in reversed(self.last_actions):
+        last_actions = copy.deepcopy(self.last_actions)
+        self.last_actions = []
+        for action in last_actions:
+            point = qpl_flow.mark_subspan_begin("undo_single_aciton")
             maybe(point).annotate("original_action", action.action)
             maybe(point).annotate("entity_id", action.entity_id)
 
             if action.action == "start":
-                # Undo start by cancelling the timer
-                await self.hass.services.async_call(
-                    "timer", "cancel", {"entity_id": action.entity_id}, blocking=True
-                )
-                # Remove from tracked timers
-                if action.entity_id in Timers._tracked_timers:
-                    del Timers._tracked_timers[action.entity_id]
-                messages.append("Timer cancelled")
+                message = await self._cancel_timer(action.entity_id, action.friendly_name, qpl_flow)
+                messages.append(message)
 
-            elif action.action == "cancel":
-                # Undo cancel by restarting with the saved duration
-                if action.duration:
-                    await self.hass.services.async_call(
-                        "timer",
-                        "start",
-                        {"entity_id": action.entity_id, "duration": action.duration},
-                        blocking=True,
-                    )
-                    messages.append("Timer restored")
-                else:
-                    messages.append("Cannot restore timer - duration unknown")
-
-            elif action.action == "pause":
-                # Undo pause by resuming
-                await self.hass.services.async_call(
-                    "timer", "start", {"entity_id": action.entity_id}, blocking=True
-                )
-                messages.append("Timer resumed")
-
-            elif action.action == "resume":
-                # Undo resume by pausing
-                await self.hass.services.async_call(
-                    "timer", "pause", {"entity_id": action.entity_id}, blocking=True
-                )
-                messages.append("Timer paused")
+            else:
+                messages.append(f"Action {action.action} is currently unsupported for undo")
+                
+            qpl_flow.mark_subspan_end("undo_single_aciton")
 
         self.last_actions = []
         qpl_flow.mark_subspan_end("timers_undo")
