@@ -126,7 +126,7 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
         maybe(point).annotate("prompt", prompt)
         updated_prompt = None
 
-        intent_response = intent.IntentResponse(language=user_input.language)
+        intent_response = intent.IntentResponse(language="en")
         for _ in range(LLM_RETRY_COUNT):
             try:
                 qpl_flow.mark_subspan_begin("sending_prompt")
@@ -166,6 +166,7 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
         qpl_flow.mark_subspan_begin("async_process")
         qpl_flow.annotate("user_input", user_input.text)
         qpl_flow.annotate("conversation_id", user_input.conversation_id)
+        qpl_flow.annotate("context", user_input.context if user_input.context else "none")
         qpl_flow.annotate(
             "device_id",
             user_input.device_id if user_input.device_id else "unknown device",
