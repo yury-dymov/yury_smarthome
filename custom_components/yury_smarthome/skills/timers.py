@@ -6,6 +6,7 @@ from homeassistant.components.conversation import ConversationInput
 from custom_components.yury_smarthome.entity import LocalLLMEntity
 from custom_components.yury_smarthome.prompt_cache import PromptCache
 from custom_components.yury_smarthome.qpl import QPL, QPLFlow
+from custom_components.yury_smarthome.const import CONF_TTS_ENGINE, SUBENTRY_TYPE_TTS
 from custom_components.yury_smarthome.maybe import maybe
 from dataclasses import dataclass
 from jinja2 import Template
@@ -136,7 +137,12 @@ class Timers(AbstractSkill):
             point = qpl_flow.mark_subspan_end("find_tts_target")
 
             if target:
-                tts_engine = "tts.piper"
+                tts_engine = self._get_tts_engine()
+                if not tts_engine:
+                    qpl_flow.mark_subspan_end("notify_timer_finished")
+                    qpl_flow.mark_failed("no TTS engine configured")
+                    _LOGGER.warning("TTS engine not configured, cannot notify timer finished")
+                    return
                 maybe(point).annotate("tts_target", target)
                 maybe(point).annotate("tts_engine", tts_engine)
                 qpl_flow.mark_subspan_begin("send_tts")
@@ -196,6 +202,14 @@ class Timers(AbstractSkill):
             if device.area_id and entity.area_id == device.area_id:
                 return entity.entity_id
 
+        return None
+
+    def _get_tts_engine(self) -> str | None:
+        """Get the configured TTS engine from the TTS subentry."""
+        entry = self.client.entry
+        for subentry in entry.subentries.values():
+            if subentry.subentry_type == SUBENTRY_TYPE_TTS:
+                return subentry.data.get(CONF_TTS_ENGINE)
         return None
 
     async def process_user_request(

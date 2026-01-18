@@ -55,4 +55,6 @@ SERVICE_TOOL_ALLOWED_DOMAINS = [
 ]
 
 CONF_CHAT_MODEL = "conf_chat_model"
+CONF_TTS_ENGINE = "conf_tts_engine"
+SUBENTRY_TYPE_TTS = "tts"
 LLM_RETRY_COUNT = 3

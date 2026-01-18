@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ollama Connection",
+        "description": "Configure the connection to your Ollama server",
+        "data": {
+          "host": "Host",
+          "port": "Port",
+          "ssl": "Use SSL"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "Already configured"
+    }
+  },
+  "config_subentries": {
+    "conversation": {
+      "initiate_flow": {
+        "user": "Add LLM Agent"
+      },
+      "step": {
+        "user": {
+          "title": "Select LLM Model",
+          "description": "Choose an LLM model from your Ollama server",
+          "data": {
+            "conf_chat_model": "LLM Model"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit LLM Model",
+          "description": "Choose a different LLM model",
+          "data": {
+            "conf_chat_model": "LLM Model"
+          }
+        }
+      },
+      "abort": {
+        "entry_not_loaded": "The integration is not loaded. Please reload it first."
+      }
+    },
+    "tts": {
+      "initiate_flow": {
+        "user": "Add TTS Engine"
+      },
+      "step": {
+        "user": {
+          "title": "Select TTS Engine",
+          "description": "Choose a Text-to-Speech engine from Home Assistant",
+          "data": {
+            "conf_tts_engine": "TTS Engine"
+          }
+        },
+        "reconfigure": {
+          "title": "Edit TTS Engine",
+          "description": "Choose a different TTS engine",
+          "data": {
+            "conf_tts_engine": "TTS Engine"
+          }
+        }
+      },
+      "abort": {
+        "entry_not_loaded": "The integration is not loaded. Please reload it first."
+      }
+    }
+  }
+}
