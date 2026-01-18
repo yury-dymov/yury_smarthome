@@ -423,31 +423,43 @@ class Timers(AbstractSkill):
         if re.match(r"^\d{1,2}:\d{2}$", duration):
             return f"00:{duration}"
 
-        # Try to parse natural language durations like "5 minutes", "1 hour 30 minutes"
-        hours = 0
-        minutes = 0
-        seconds = 0
+        # Try to parse natural language durations like "5 minutes", "1.5 hours"
+        total_seconds = 0.0
 
-        hour_match = re.search(r"(\d+)\s*(?:hour|hr|h)", duration, re.IGNORECASE)
-        min_match = re.search(
-            r"(\d+)\s*(?:minute|min|m)(?!s*\s*sec)", duration, re.IGNORECASE
+        # Match decimal numbers for hours, minutes, seconds
+        hour_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:hour|hr|h)", duration, re.IGNORECASE
         )
-        sec_match = re.search(r"(\d+)\s*(?:second|sec|s)", duration, re.IGNORECASE)
+        min_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:minute|min|m)(?!s*\s*sec)", duration, re.IGNORECASE
+        )
+        sec_match = re.search(
+            r"(\d+(?:\.\d+)?)\s*(?:second|sec|s)", duration, re.IGNORECASE
+        )
 
         if hour_match:
-            hours = int(hour_match.group(1))
+            total_seconds += float(hour_match.group(1)) * 3600
         if min_match:
-            minutes = int(min_match.group(1))
+            total_seconds += float(min_match.group(1)) * 60
         if sec_match:
-            seconds = int(sec_match.group(1))
+            total_seconds += float(sec_match.group(1))
 
-        # If we found any time components, format them
-        if hours or minutes or seconds:
+        # If we found any time components, convert to HH:MM:SS
+        if total_seconds > 0:
+            total_seconds = round(total_seconds)
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = int(total_seconds % 60)
             return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
-        # If it's just a number, assume minutes
-        if duration.isdigit():
-            return f"00:{int(duration):02d}:00"
+        # If it's just a number (integer or decimal), assume minutes
+        number_match = re.match(r"^(\d+(?:\.\d+)?)$", duration.strip())
+        if number_match:
+            total_seconds = round(float(number_match.group(1)) * 60)
+            hours = int(total_seconds // 3600)
+            minutes = int((total_seconds % 3600) // 60)
+            seconds = int(total_seconds % 60)
+            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
         # Return as-is and let Home Assistant handle it
         return duration
