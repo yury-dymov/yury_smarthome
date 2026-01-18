@@ -60,6 +60,13 @@ class OllamaAPIClient(LocalLLMClient):
             _build_default_ssl_context() if client_options.get(CONF_SSL) else None
         )
 
+    def _update_options(self, entity_options: dict[str, Any]) -> None:
+        """Update client options when configuration changes."""
+        self.api_host = OllamaAPIClient._api_host(entity_options)
+        self._ssl_context = (
+            _build_default_ssl_context() if entity_options.get(CONF_SSL) else None
+        )
+
     def _build_client(
         self, *, timeout: float | int | httpx.Timeout | None = None
     ) -> AsyncClient:

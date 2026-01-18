@@ -17,6 +17,7 @@
   },
   "config_subentries": {
     "conversation": {
+      "title": "LLM",
       "initiate_flow": {
         "user": "Add LLM Agent"
       },
@@ -41,6 +42,7 @@
       }
     },
     "tts": {
+      "title": "TTS",
       "initiate_flow": {
         "user": "Add TTS Engine"
       },

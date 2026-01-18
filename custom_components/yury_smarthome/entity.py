@@ -36,6 +36,10 @@ class LocalLLMClient:
         """Load the model on the backend. Implemented by sub-classes"""
         pass
 
+    def _update_options(self, entity_options: dict[str, Any]) -> None:
+        """Update options on the backend. Implemented by sub-classes"""
+        pass
+
 
 @dataclass(kw_only=True)
 class TextGenerationResult:

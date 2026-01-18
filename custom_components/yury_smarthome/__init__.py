@@ -40,7 +40,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: LocalLLMConfigEntry) -> 
 async def _async_update_listener(
     hass: HomeAssistant, entry: LocalLLMConfigEntry
 ) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
+    # Don't reload on subentry changes - those are handled by the platform
+    # Only reload if main entry data/options changed (e.g., host/port)
+    pass
 
 
 class YuryLLMAPI(llm.API):

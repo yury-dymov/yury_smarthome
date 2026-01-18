@@ -150,9 +150,6 @@ class LLMSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
         """Handle reconfiguration of existing LLM subentry."""
-        if self._get_entry().state != config_entries.ConfigEntryState.LOADED:
-            return self.async_abort(reason="entry_not_loaded")
-
         subentry = self._get_reconfigure_subentry()
 
         if user_input is not None:
@@ -163,6 +160,9 @@ class LLMSubentryFlowHandler(config_entries.ConfigSubentryFlow):
             )
 
         entry = self._get_entry()
+        if entry.state != config_entries.ConfigEntryState.LOADED or not entry.runtime_data:
+            return self.async_abort(reason="entry_not_loaded")
+
         available_models = await entry.runtime_data.async_get_available_models()
         current_model = subentry.data.get(CONF_CHAT_MODEL)
 
@@ -216,9 +216,6 @@ class TTSSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
         """Handle reconfiguration of existing TTS subentry."""
-        if self._get_entry().state != config_entries.ConfigEntryState.LOADED:
-            return self.async_abort(reason="entry_not_loaded")
-
         subentry = self._get_reconfigure_subentry()
 
         if user_input is not None:
