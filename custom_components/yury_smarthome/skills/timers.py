@@ -33,7 +33,7 @@ class TrackedTimer:
     entity_id: str
     device_id: str | None
     conversation_id: str | None
-    friendly_name: str  # Context/label from user request (e.g., "egg timer", "laundry")
+    friendly_name: str | None  # Context/label from user request (e.g., "egg timer", "laundry")
 
 
 class Timers(AbstractSkill):
@@ -102,10 +102,9 @@ class Timers(AbstractSkill):
         qpl_flow = self.qpl_provider.create_flow("timer_finished")
         point = qpl_flow.mark_subspan_begin("on_timer_finished")
         maybe(point).annotate("entity_id", entity_id)
-        maybe(point).annotate("friendly_name", tracked.friendly_name)
         maybe(point).annotate("device_id", tracked.device_id)
         _LOGGER.info(
-            f"Our timer {entity_id} ({tracked.friendly_name}) finished, notifying user"
+            f"Our timer {entity_id} finished, notifying user"
         )
 
         # Remove from tracked timers
@@ -120,7 +119,10 @@ class Timers(AbstractSkill):
 
     async def _notify_timer_finished(self, tracked: TrackedTimer, qpl_flow: QPLFlow):
         """Notify the user via TTS that their timer has finished."""
-        message = f"{tracked.friendly_name} timer finished"
+        if tracked.friendly_name is not None:
+            message = f"{tracked.friendly_name} timer finished"
+        else:
+            message = "Timer finished"
         point = qpl_flow.mark_subspan_begin("notify_timer_finished")
         if tracked.conversation_id is not None:
             qpl_flow.annotate("conversation_id", tracked.conversation_id)
@@ -290,7 +292,7 @@ class Timers(AbstractSkill):
             self.last_action = TimerAction("start", entity_id, duration)
 
             # Use context as friendly name, fall back to timer state name
-            friendly_name = context if context else self.hass.states.get(entity_id).name
+            friendly_name = context if context else None
 
             Timers._tracked_timers[entity_id] = TrackedTimer(
                 entity_id=entity_id,
@@ -299,7 +301,7 @@ class Timers(AbstractSkill):
                 conversation_id=request.conversation_id,
             )
             _LOGGER.debug(
-                f"Tracking timer {entity_id} ({friendly_name}) from device {request.device_id}"
+                f"Tracking timer {entity_id} from device {request.device_id}"
             )
 
             qpl_flow.mark_subspan_end("start_timer")
