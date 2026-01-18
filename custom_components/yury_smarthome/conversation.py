@@ -31,6 +31,7 @@ from .const import CONF_CHAT_MODEL, LLM_RETRY_COUNT
 from .entity import LocalLLMClient, LocalLLMConfigEntry, LocalLLMEntity
 from .prompt_cache import PromptCache
 from .maybe import maybe
+import json
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -166,7 +167,10 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
         qpl_flow.mark_subspan_begin("async_process")
         qpl_flow.annotate("user_input", user_input.text)
         qpl_flow.annotate("conversation_id", user_input.conversation_id)
-        qpl_flow.annotate("context", user_input.context if user_input.context else "none")
+        context = "none"
+        if user_input.context is not None:
+            context = json.dumps(user_input.context.as_dict())
+        qpl_flow.annotate("context", context)
         qpl_flow.annotate(
             "device_id",
             user_input.device_id if user_input.device_id else "unknown device",
