@@ -224,7 +224,7 @@ class Timers(AbstractSkill):
             entity_id = json_data.get("entity_id")
             duration = json_data.get("duration")
             context = json_data.get("context")
-            if context == "":
+            if context in {"", "timer"}:
                 context = None
 
             if action == "start":
