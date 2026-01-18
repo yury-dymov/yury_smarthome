@@ -144,13 +144,11 @@ class Timers(AbstractSkill):
                         "tts",
                         "speak",
                         {
+                            "entity_id": tts_engine,
                             "media_player_entity_id": target,
                             "message": message,
                         },
                         blocking=False,
-                        target={
-                            "entity_id": tts_engine,
-                        },
                     )
                     qpl_flow.mark_subspan_end("send_tts")
                     notification_sent = True
