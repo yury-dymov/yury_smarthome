@@ -135,14 +135,16 @@ class Timers(AbstractSkill):
             point = qpl_flow.mark_subspan_end("find_tts_target")
 
             if target:
+                tts_engine = "stt.faster_whisper_2"
                 maybe(point).annotate("tts_target", target)
+                maybe(point).annotate("tts_engine", tts_engine)
                 qpl_flow.mark_subspan_begin("send_tts")
                 try:
                     await self.hass.services.async_call(
                         "tts",
                         "speak",
                         {
-                            "entity_id": "stt.faster_whisper_2",
+                            "entity_id": tts_engine,
                             "language": "en",
                             "media_player_entity_id": target,
                             "message": message,
