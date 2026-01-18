@@ -13,7 +13,13 @@ from homeassistant.helpers import llm
 from homeassistant.components import conversation
 
 from . import YuryLLMAPI
-from .const import DOMAIN, YURY_LLM_API_ID, CONF_CHAT_MODEL, CONF_TTS_ENGINE, SUBENTRY_TYPE_TTS
+from .const import (
+    DOMAIN,
+    YURY_LLM_API_ID,
+    CONF_CHAT_MODEL,
+    CONF_TTS_ENGINE,
+    SUBENTRY_TYPE_TTS,
+)
 from .entity import LocalLLMConfigEntry, LocalLLMClient
 
 from homeassistant.helpers.selector import (
@@ -78,7 +84,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 def _build_llm_schema(available_models: list[str], current_model: str | None = None):
     """Build schema for LLM model selection."""
-    default = current_model if current_model else (available_models[0] if available_models else "")
+    default = (
+        current_model
+        if current_model
+        else (available_models[0] if available_models else "")
+    )
     return vol.Schema(
         {
             vol.Required(CONF_CHAT_MODEL, default=default): SelectSelector(
@@ -95,7 +105,11 @@ def _build_llm_schema(available_models: list[str], current_model: str | None = N
 
 def _build_tts_schema(available_tts_engines: list[str], current_tts: str | None = None):
     """Build schema for TTS engine selection."""
-    default = current_tts if current_tts else (available_tts_engines[0] if available_tts_engines else "")
+    default = (
+        current_tts
+        if current_tts
+        else (available_tts_engines[0] if available_tts_engines else "")
+    )
     return vol.Schema(
         {
             vol.Required(CONF_TTS_ENGINE, default=default): SelectSelector(
@@ -152,15 +166,19 @@ class LLMSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         """Handle reconfiguration of existing LLM subentry."""
         subentry = self._get_reconfigure_subentry()
 
+        entry = self._get_entry()
         if user_input is not None:
             return self.async_update_and_abort(
+                entry,
                 subentry,
                 title=user_input[CONF_CHAT_MODEL],
                 data=user_input,
             )
 
-        entry = self._get_entry()
-        if entry.state != config_entries.ConfigEntryState.LOADED or not entry.runtime_data:
+        if (
+            entry.state != config_entries.ConfigEntryState.LOADED
+            or not entry.runtime_data
+        ):
             return self.async_abort(reason="entry_not_loaded")
 
         available_models = await entry.runtime_data.async_get_available_models()
@@ -216,10 +234,12 @@ class TTSSubentryFlowHandler(config_entries.ConfigSubentryFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.SubentryFlowResult:
         """Handle reconfiguration of existing TTS subentry."""
+        entry = self._get_entry()
         subentry = self._get_reconfigure_subentry()
 
         if user_input is not None:
             return self.async_update_and_abort(
+                entry,
                 subentry,
                 title=user_input[CONF_TTS_ENGINE],
                 data=user_input,
