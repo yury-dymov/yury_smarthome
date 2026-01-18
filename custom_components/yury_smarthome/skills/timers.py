@@ -223,9 +223,7 @@ class Timers(AbstractSkill):
 
             entity_id = json_data.get("entity_id")
             duration = json_data.get("duration")
-            context = json_data.get(
-                "context", ""
-            )  # User's description of what the timer is for
+            context = json_data.get("context")
 
             if action == "start":
                 await self._start_timer(
@@ -249,7 +247,7 @@ class Timers(AbstractSkill):
         self,
         entity_id: str | None,
         duration: str | None,
-        context: str,
+        context: str | None,
         request: ConversationInput,
         response: intent.IntentResponse,
         qpl_flow: QPLFlow,
@@ -279,7 +277,7 @@ class Timers(AbstractSkill):
 
         maybe(point).annotate("duration", duration)
         maybe(point).annotate("entity_id", entity_id)
-        maybe(point).annotate("context", context)
+        maybe(point).annotate("context", context if context else "default")
 
         try:
             await self.hass.services.async_call(
