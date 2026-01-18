@@ -135,7 +135,7 @@ class Timers(AbstractSkill):
             point = qpl_flow.mark_subspan_end("find_tts_target")
 
             if target:
-                tts_engine = "stt.faster_whisper_2"
+                tts_engine = "tts.piper"
                 maybe(point).annotate("tts_target", target)
                 maybe(point).annotate("tts_engine", tts_engine)
                 qpl_flow.mark_subspan_begin("send_tts")
