@@ -9,6 +9,7 @@ from .shopping_list import ShoppingList
 from .timers import Timers
 from .world_clock import WorldClock
 from .inbox_tasks import InboxTasks
+from .reminders import Reminders
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
 from datetime import datetime
@@ -26,12 +27,18 @@ class SkillRegistry:
         prompt_cache: PromptCache,
         qpl_provider: QPL,
     ):
+        inbox_tasks = InboxTasks(hass, client, prompt_cache)
+        reminders = Reminders(hass, client, prompt_cache, qpl_provider)
+        # Set up dependency: Reminders can delegate to InboxTasks
+        reminders.set_inbox_tasks_skill(inbox_tasks)
+
         skills = [
             ControlDevices(hass, client, prompt_cache),
             ShoppingList(hass, client, prompt_cache),
             Timers(hass, client, prompt_cache, qpl_provider),
             WorldClock(hass, client, prompt_cache),
-            InboxTasks(hass, client, prompt_cache),
+            inbox_tasks,
+            reminders,
         ]
         registry = {}
         for skill in skills:
