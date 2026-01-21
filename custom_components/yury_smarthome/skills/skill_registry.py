@@ -8,6 +8,7 @@ from .control_devices import ControlDevices
 from .shopping_list import ShoppingList
 from .timers import Timers
 from .world_clock import WorldClock
+from .inbox_tasks import InboxTasks
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
 from datetime import datetime
@@ -30,6 +31,7 @@ class SkillRegistry:
             ShoppingList(hass, client, prompt_cache),
             Timers(hass, client, prompt_cache, qpl_provider),
             WorldClock(hass, client, prompt_cache),
+            InboxTasks(hass, client, prompt_cache),
         ]
         registry = {}
         for skill in skills:
@@ -64,7 +66,7 @@ class SkillRegistry:
             qpl_flow.mark_subspan_end("undo")
             return
 
-        skill = self.registry[llm_response]
+        skill = self.registry.get(llm_response)
         if skill is not None:
             conversation_id = original_request.conversation_id
             if conversation_id is not None:
@@ -84,7 +86,7 @@ class SkillRegistry:
         if history_pair is None:
             return None
         if (datetime.now() - history_pair[0]).total_seconds() <= 30:
-            return self.registry[history_pair[1]]
+            return self.registry.get(history_pair[1])
         return None
 
 

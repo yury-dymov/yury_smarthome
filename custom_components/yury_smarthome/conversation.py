@@ -134,6 +134,7 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
                 llm_response = await self.send_message(
                     updated_prompt if updated_prompt is not None else prompt
                 )
+                llm_response = llm_response.strip()
                 point = qpl_flow.mark_subspan_end("sending_prompt")
                 maybe(point).annotate("llm_response", llm_response)
                 qpl_flow.mark_subspan_begin("processing_user_request")
