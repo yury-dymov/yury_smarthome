@@ -32,7 +32,7 @@ class WorldClock(AbstractSkill):
         try:
             json_data = json.loads(llm_response)
             timezone_str = json_data.get("timezone")
-            location = json_data.get("location", "the requested location")
+            location = json_data.get("location")
 
             if timezone_str is None:
                 err = "Could not determine the timezone for the requested location"
@@ -42,10 +42,14 @@ class WorldClock(AbstractSkill):
 
             qpl_flow.mark_subspan_begin("getting_time")
             try:
+                # Handle "local" timezone - use Home Assistant's configured timezone
+                if timezone_str == "local":
+                    timezone_str = self.hass.config.time_zone
+
                 tz = ZoneInfo(timezone_str)
                 current_time = datetime.now(tz)
                 formatted_time = current_time.strftime("%I:%M %p")
-            except Exception as e:
+            except Exception:
                 err = f"Invalid timezone: {timezone_str}"
                 qpl_flow.mark_failed(err)
                 response.async_set_speech(err)
@@ -54,7 +58,11 @@ class WorldClock(AbstractSkill):
             maybe(point).annotate("timezone", timezone_str)
             maybe(point).annotate("time", formatted_time)
 
-            answer = f"It's {formatted_time} in {location}"
+            # Build response based on whether a location was specified
+            if location:
+                answer = f"It's {formatted_time} in {location}"
+            else:
+                answer = f"It's {formatted_time}"
             response.async_set_speech(answer)
 
         except json.JSONDecodeError as e:
