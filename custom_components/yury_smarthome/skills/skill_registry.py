@@ -10,6 +10,7 @@ from .timers import Timers
 from .world_clock import WorldClock
 from .inbox_tasks import InboxTasks
 from .reminders import Reminders
+from .other import Other
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
 from datetime import datetime
@@ -39,6 +40,7 @@ class SkillRegistry:
             WorldClock(hass, client, prompt_cache),
             inbox_tasks,
             reminders,
+            Other(hass, client, prompt_cache),
         ]
         registry = {}
         for skill in skills:
