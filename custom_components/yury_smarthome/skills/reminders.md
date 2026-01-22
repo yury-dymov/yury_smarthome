@@ -31,7 +31,14 @@ Return this shape:
     "type": "relative" | "absolute",
     "value": <depends on type, see below>
   },
-  "recurrence": null | {"frequency": "daily" | "weekly" | "monthly" | "yearly", "interval": number, "count": number | null, "until": "YYYY-MM-DD" | null}
+  "recurrence": null | {
+    "frequency": "daily" | "weekly" | "monthly" | "yearly",
+    "interval": number,
+    "count": number | null,
+    "until": "YYYY-MM-DD" | null,
+    "byday": ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] | null,
+    "bymonthday": number | null
+  }
 }
 
 ### Time specification types:
@@ -65,12 +72,20 @@ Day values for absolute type:
 
 Time should always be in 24-hour format "HH:MM". If no time specified, default to "09:00".
 
-Recurrence rules (same as before):
-- "every day" -> {"frequency": "daily", "interval": 1, "count": null, "until": null}
-- "every week" -> {"frequency": "weekly", "interval": 1, "count": null, "until": null}
-- "every 2 weeks" -> {"frequency": "weekly", "interval": 2, "count": null, "until": null}
-- "every month" -> {"frequency": "monthly", "interval": 1, "count": null, "until": null}
+Recurrence rules:
+- "every day" -> {"frequency": "daily", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": null}
+- "every week" -> {"frequency": "weekly", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": null}
+- "every 2 weeks" -> {"frequency": "weekly", "interval": 2, "count": null, "until": null, "byday": null, "bymonthday": null}
+- "every month" -> {"frequency": "monthly", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": null}
+- "every Monday" -> {"frequency": "weekly", "interval": 1, "count": null, "until": null, "byday": ["MO"], "bymonthday": null}
+- "every Monday and Wednesday" -> {"frequency": "weekly", "interval": 1, "count": null, "until": null, "byday": ["MO", "WE"], "bymonthday": null}
+- "every 1st day of month" or "every 1st of the month" -> {"frequency": "monthly", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": 1}
+- "every 15th of the month" -> {"frequency": "monthly", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": 15}
+- "every month until end of 2026" -> {"frequency": "monthly", "interval": 1, "count": null, "until": "2026-12-31", "byday": null, "bymonthday": null}
 - No recurrence specified -> null
+
+byday values: MO, TU, WE, TH, FR, SA, SU
+bymonthday values: 1-31 (day of month)
 
 ## For DELETE action:
 Return this shape:
@@ -97,8 +112,10 @@ Return this shape when NO TIME is specified:
 Examples:
 - User: "Remind me to call Marcus in 2 hours" -> {"action": "create", "summary": "call Marcus", "time_spec": {"type": "relative", "value": {"hours": 2}}, "recurrence": null}
 - User: "Remind me tomorrow at 3pm to pick up groceries" -> {"action": "create", "summary": "pick up groceries", "time_spec": {"type": "absolute", "value": {"day": "tomorrow", "time": "15:00"}}, "recurrence": null}
-- User: "Set a reminder every Monday to submit timesheet" -> {"action": "create", "summary": "submit timesheet", "time_spec": {"type": "absolute", "value": {"day": "next_monday", "time": "09:00"}}, "recurrence": {"frequency": "weekly", "interval": 1, "count": null, "until": null}}
-- User: "Remind me every day at 8am to take vitamins" -> {"action": "create", "summary": "take vitamins", "time_spec": {"type": "absolute", "value": {"day": "tomorrow", "time": "08:00"}}, "recurrence": {"frequency": "daily", "interval": 1, "count": null, "until": null}}
+- User: "Set a reminder every Monday to submit timesheet" -> {"action": "create", "summary": "submit timesheet", "time_spec": {"type": "absolute", "value": {"day": "next_monday", "time": "09:00"}}, "recurrence": {"frequency": "weekly", "interval": 1, "count": null, "until": null, "byday": ["MO"], "bymonthday": null}}
+- User: "Remind me every day at 8am to take vitamins" -> {"action": "create", "summary": "take vitamins", "time_spec": {"type": "absolute", "value": {"day": "tomorrow", "time": "08:00"}}, "recurrence": {"frequency": "daily", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": null}}
 - User: "Remind me in 30 minutes to check the oven" -> {"action": "create", "summary": "check the oven", "time_spec": {"type": "relative", "value": {"minutes": 30}}, "recurrence": null}
+- User: "Remind me to give dogs meds every 1st of the month at 10pm until end of 2026" -> {"action": "create", "summary": "give dogs meds", "time_spec": {"type": "absolute", "value": {"day": "1", "time": "22:00"}}, "recurrence": {"frequency": "monthly", "interval": 1, "count": null, "until": "2026-12-31", "byday": null, "bymonthday": 1}}
+- User: "Remind me every 15th at noon to pay rent" -> {"action": "create", "summary": "pay rent", "time_spec": {"type": "absolute", "value": {"day": "15", "time": "12:00"}}, "recurrence": {"frequency": "monthly", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": 15}}
 - User: "Delete the reminder about groceries" with existing ["pick up groceries", "call doctor"] -> {"action": "delete", "match_summary": "pick up groceries"}
 - User: "Remind me to call Marcus" (no time) -> {"action": "delegate_to_todo", "task": "call Marcus"}

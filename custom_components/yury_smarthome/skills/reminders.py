@@ -9,9 +9,10 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dateutil.relativedelta import relativedelta
 from jinja2 import Template
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 from homeassistant.components.conversation import ConversationInput
+from homeassistant.components.calendar import CalendarEntity
 from custom_components.yury_smarthome.entity import LocalLLMEntity
 from custom_components.yury_smarthome.prompt_cache import PromptCache
 from custom_components.yury_smarthome.qpl import QPL, QPLFlow
@@ -26,22 +27,15 @@ NOTIFICATION_TARGET_KEYWORDS = ["yury_dymov", "delorean"]
 # Keywords to match preferred calendar
 CALENDAR_KEYWORDS = ["yury", "local"]
 
+# Hashtag prefix for reminder notifications
+REMINDER_HASHTAG_PREFIX = "#remind:"
+
 
 @dataclass
 class CreatedReminder:
     calendar_id: str
     uid: str
-    summary: str
-
-
-@dataclass
-class TrackedReminder:
-    """Track reminders we created for notification purposes."""
-
-    calendar_id: str
-    uid: str
-    summary: str
-    start_time: datetime
+    summary: str  # Clean summary without hashtag
 
 
 class Reminders(AbstractSkill):
@@ -49,8 +43,6 @@ class Reminders(AbstractSkill):
     last_calendar_id: str | None
     inbox_tasks_skill: "AbstractSkill | None"
     qpl_provider: QPL
-    # Class-level tracking of reminders for notifications
-    _tracked_reminders: dict[str, TrackedReminder] = {}
     _listener_registered: bool = False
 
     def __init__(
@@ -68,59 +60,109 @@ class Reminders(AbstractSkill):
         self._register_calendar_listener()
 
     def _register_calendar_listener(self):
-        """Register listener for calendar event triggers."""
+        """Register periodic check for reminder notifications."""
         if Reminders._listener_registered:
             return
 
-        @callback
-        def _handle_calendar_event(event):
-            """Handle calendar event triggers."""
-            calendar_id = event.data.get("calendar_id", "")
-            summary = event.data.get("summary", "")
-            uid = event.data.get("uid", "")
+        # Track which events we've already notified to avoid duplicates
+        notified_events: set[str] = set()
 
-            _LOGGER.debug(f"Calendar event triggered: {summary} from {calendar_id}")
-
-            # Check if this is a reminder we're tracking
-            tracking_key = f"{calendar_id}:{uid}"
-            if tracking_key in Reminders._tracked_reminders:
-                tracked = Reminders._tracked_reminders[tracking_key]
-                self.hass.async_create_task(self._send_reminder_notification(tracked))
-
-        # Listen for calendar events
-        self.hass.bus.async_listen("calendar_event", _handle_calendar_event)
-        Reminders._listener_registered = True
-        _LOGGER.debug("Calendar event listener registered")
-
-        # Also set up a periodic check for upcoming reminders
-        self._schedule_reminder_check()
-
-    def _schedule_reminder_check(self):
-        """Schedule periodic checks for upcoming reminders."""
-
-        async def _check_reminders(*args):
-            """Check for reminders that should trigger now."""
+        async def _check_upcoming_reminders(*args):
+            """Check calendars for upcoming reminders with our hashtag."""
             now = self._get_current_time()
-            to_remove = []
+            check_window_start = now - timedelta(minutes=1)
+            check_window_end = now + timedelta(minutes=2)
 
-            for key, tracked in Reminders._tracked_reminders.items():
-                # If the reminder time has passed (within a 1-minute window)
-                time_diff = (tracked.start_time - now).total_seconds()
-                if -60 <= time_diff <= 60:
-                    await self._send_reminder_notification(tracked)
-                    to_remove.append(key)
-                elif time_diff < -60:
-                    # Reminder is old, remove it
-                    to_remove.append(key)
+            # Find calendars matching our keywords
+            for state in self.hass.states.async_all():
+                if not state.entity_id.startswith("calendar."):
+                    continue
 
-            for key in to_remove:
-                if key in Reminders._tracked_reminders:
-                    del Reminders._tracked_reminders[key]
+                entity_lower = state.entity_id.lower()
+                name_lower = state.name.lower() if state.name else ""
+
+                # Only check calendars matching our keywords
+                matches_keyword = any(
+                    kw.lower() in entity_lower or kw.lower() in name_lower
+                    for kw in CALENDAR_KEYWORDS
+                )
+                if not matches_keyword:
+                    continue
+
+                try:
+                    calendar_entity = self._get_calendar_entity(state.entity_id)
+                    if calendar_entity is None:
+                        continue
+
+                    events = await calendar_entity.async_get_events(
+                        self.hass, check_window_start, check_window_end
+                    )
+
+                    for event in events:
+                        # Create unique key for this event instance
+                        event_key = f"{state.entity_id}:{event.uid}:{event.start}"
+
+                        # Skip if already notified
+                        if event_key in notified_events:
+                            continue
+
+                        # Check if event has our hashtag in description
+                        description = event.description or ""
+                        targets = self._decode_reminder_hashtag(description)
+
+                        if targets:
+                            summary = event.summary or "Reminder"
+                            _LOGGER.info(f"Reminder due: {summary}, targets: {targets}")
+                            await self._send_reminder_notification(summary, targets)
+                            notified_events.add(event_key)
+
+                            # Clean up old entries (keep last 100)
+                            if len(notified_events) > 100:
+                                # Remove oldest entries
+                                to_remove = list(notified_events)[:50]
+                                for key in to_remove:
+                                    notified_events.discard(key)
+
+                except Exception as e:
+                    _LOGGER.debug(f"Error checking calendar {state.entity_id}: {e}")
 
         # Check every minute
         from homeassistant.helpers.event import async_track_time_interval
 
-        async_track_time_interval(self.hass, _check_reminders, timedelta(minutes=1))
+        async_track_time_interval(self.hass, _check_upcoming_reminders, timedelta(minutes=1))
+        Reminders._listener_registered = True
+        _LOGGER.debug("Reminder check scheduler registered")
+
+    def _encode_reminder_hashtag(self, targets: list[str]) -> str:
+        """Encode notification targets as a hashtag suffix.
+
+        Example: ["notify.mobile_app_yury_dymov", "notify.delorean"]
+                 -> "#remind:mobile_app_yury_dymov,delorean"
+        """
+        # Strip "notify." prefix from targets
+        clean_targets = [t.replace("notify.", "") for t in targets]
+        return f"{REMINDER_HASHTAG_PREFIX}{','.join(clean_targets)}"
+
+    def _decode_reminder_hashtag(self, description: str) -> list[str] | None:
+        """Decode hashtag from description and return targets list.
+
+        Returns None if no hashtag found.
+        Returns ["notify.target1", ...] if hashtag found.
+        """
+        if not description or REMINDER_HASHTAG_PREFIX not in description:
+            return None
+
+        # Find the hashtag
+        match = re.search(rf"{re.escape(REMINDER_HASHTAG_PREFIX)}([^\s]+)", description)
+        if not match:
+            return None
+
+        targets_str = match.group(1)
+
+        # Parse targets
+        targets = [f"notify.{t.strip()}" for t in targets_str.split(",") if t.strip()]
+
+        return targets if targets else None
 
     def _find_notification_targets(self) -> list[str]:
         """Find notification service targets matching our keywords."""
@@ -146,17 +188,14 @@ class Reminders(AbstractSkill):
 
         return targets
 
-    async def _send_reminder_notification(self, tracked: TrackedReminder):
+    async def _send_reminder_notification(self, summary: str, targets: list[str]):
         """Send notification for a triggered reminder."""
         qpl_flow = self.qpl_provider.create_flow("reminder_notification")
         point = qpl_flow.mark_subspan_begin("send_reminder_notification")
-        maybe(point).annotate("summary", tracked.summary)
-
-        message = f"Reminder: {tracked.summary}"
-
-        # Find notification targets dynamically
-        targets = self._find_notification_targets()
+        maybe(point).annotate("summary", summary)
         maybe(point).annotate("targets", str(targets))
+
+        message = f"Reminder: {summary}"
         did_sent_at_least_once = False
 
         for target in targets:
@@ -252,7 +291,7 @@ class Reminders(AbstractSkill):
 
             if action == "create":
                 await self._create_reminder(
-                    calendar_id, json_data, request, response, qpl_flow
+                    calendar_id, json_data, response, qpl_flow
                 )
             elif action == "delete":
                 await self._delete_reminder(
@@ -307,7 +346,6 @@ class Reminders(AbstractSkill):
         self,
         calendar_id: str,
         data: dict,
-        request: ConversationInput,
         response: intent.IntentResponse,
         qpl_flow: QPLFlow,
     ):
@@ -343,17 +381,34 @@ class Reminders(AbstractSkill):
         # End time is 1 hour after start
         end_dt = start_dt + timedelta(hours=1)
 
-        service_data = {
-            "entity_id": calendar_id,
+        # Get the calendar entity directly
+        calendar_entity = self._get_calendar_entity(calendar_id)
+        if calendar_entity is None:
+            err = f"Could not find calendar entity: {calendar_id}"
+            qpl_flow.mark_failed(err)
+            response.async_set_speech(err)
+            qpl_flow.mark_subspan_end("create_reminder")
+            return
+
+        # Find notification targets and create hashtag for description
+        targets = self._find_notification_targets()
+        description = self._encode_reminder_hashtag(targets) if targets else ""
+        maybe(point).annotate("description", description)
+
+        # Build kwargs for async_create_event
+        event_data = {
             "summary": summary,
-            "start_date_time": start_dt.isoformat(),
-            "end_date_time": end_dt.isoformat(),
+            "dtstart": start_dt,
+            "dtend": end_dt,
         }
 
+        if description:
+            event_data["description"] = description
+
         if recurrence:
-            rrule = self._build_rrule(recurrence)
+            rrule = self._build_rrule(recurrence, start_dt)
             if rrule:
-                service_data["rrule"] = rrule
+                event_data["rrule"] = rrule
                 maybe(point).annotate("rrule", rrule)
 
         try:
@@ -361,25 +416,17 @@ class Reminders(AbstractSkill):
             uid = self._generate_uid(summary, start_dt, end_dt)
             maybe(point).annotate("generated_uid", uid)
 
-            await self.hass.services.async_call(
-                "calendar",
-                "create_event",
-                service_data,
-                blocking=True,
-            )
+            # Include UID in event data so we can delete it later
+            event_data["uid"] = uid
 
+            await calendar_entity.async_create_event(**event_data)
+
+            # Track for undo (store clean summary for user display)
             self.created_reminders.append(
                 CreatedReminder(calendar_id=calendar_id, uid=uid, summary=summary)
             )
-            # Track for notification
-            tracking_key = f"{calendar_id}:{uid}"
-            Reminders._tracked_reminders[tracking_key] = TrackedReminder(
-                calendar_id=calendar_id,
-                uid=uid,
-                summary=summary,
-                start_time=start_dt,
-            )
-            _LOGGER.debug(f"Tracking reminder: {summary} at {start_dt}")
+
+            _LOGGER.debug(f"Created reminder: {summary} at {start_dt}")
 
             qpl_flow.mark_subspan_end("create_reminder")
 
@@ -417,6 +464,7 @@ class Reminders(AbstractSkill):
 
         best_match = None
         for reminder in existing_reminders:
+            # Compare against clean summary (without hashtag)
             summary = reminder.get("summary", "").lower()
             if match_summary in summary or summary in match_summary:
                 best_match = reminder
@@ -430,6 +478,7 @@ class Reminders(AbstractSkill):
             return
 
         uid = best_match.get("uid")
+        # Get clean summary for user display
         summary = best_match.get("summary", "")
 
         if not uid:
@@ -442,21 +491,17 @@ class Reminders(AbstractSkill):
         maybe(point).annotate("uid", uid)
         maybe(point).annotate("summary", summary)
 
-        try:
-            await self.hass.services.async_call(
-                "calendar",
-                "delete_event",
-                {
-                    "entity_id": calendar_id,
-                    "uid": uid,
-                },
-                blocking=True,
-            )
+        # Get the calendar entity directly
+        calendar_entity = self._get_calendar_entity(calendar_id)
+        if calendar_entity is None:
+            err = f"Could not find calendar entity: {calendar_id}"
+            qpl_flow.mark_failed(err)
+            response.async_set_speech(err)
+            qpl_flow.mark_subspan_end("delete_reminder")
+            return
 
-            # Remove from tracking
-            tracking_key = f"{calendar_id}:{uid}"
-            if tracking_key in Reminders._tracked_reminders:
-                del Reminders._tracked_reminders[tracking_key]
+        try:
+            await calendar_entity.async_delete_event(uid)
 
             qpl_flow.mark_subspan_end("delete_reminder")
             response.async_set_speech(f"Reminder '{summary}' deleted")
@@ -479,7 +524,7 @@ class Reminders(AbstractSkill):
         uid_hash = hashlib.sha256(uid_source.encode()).hexdigest()[:32]
         return f"{uid_hash}@yury-smarthome"
 
-    def _build_rrule(self, recurrence: dict) -> str | None:
+    def _build_rrule(self, recurrence: dict, start_dt: datetime) -> str | None:
         """Build an iCalendar RRULE string from recurrence data."""
         frequency = recurrence.get("frequency")
         if not frequency:
@@ -508,12 +553,31 @@ class Reminders(AbstractSkill):
 
         until = recurrence.get("until")
         if until:
-            until_clean = until.replace("-", "")
-            parts.append(f"UNTIL={until_clean}")
+            # UNTIL must match DTSTART type - if DTSTART is datetime, UNTIL must be datetime too
+            # Parse the date and use the same time as start_dt
+            try:
+                until_date = datetime.strptime(until, "%Y-%m-%d")
+                until_dt = until_date.replace(
+                    hour=start_dt.hour,
+                    minute=start_dt.minute,
+                    second=start_dt.second,
+                    tzinfo=start_dt.tzinfo,
+                )
+                # Format as iCalendar datetime (YYYYMMDDTHHMMSS)
+                until_str = until_dt.strftime("%Y%m%dT%H%M%S")
+                parts.append(f"UNTIL={until_str}")
+            except ValueError:
+                # Fallback to just the date if parsing fails
+                until_clean = until.replace("-", "")
+                parts.append(f"UNTIL={until_clean}")
 
         byday = recurrence.get("byday")
         if byday:
             parts.append(f"BYDAY={','.join(byday)}")
+
+        bymonthday = recurrence.get("bymonthday")
+        if bymonthday:
+            parts.append(f"BYMONTHDAY={bymonthday}")
 
         return ";".join(parts)
 
@@ -539,6 +603,29 @@ class Reminders(AbstractSkill):
         """Get current time in the configured timezone."""
         tz = self._get_timezone()
         return datetime.now(tz)
+
+    def _get_calendar_entity(self, entity_id: str) -> CalendarEntity | None:
+        """Get the CalendarEntity instance for the given entity_id."""
+        # Try the standard EntityComponent path
+        entity_component = self.hass.data.get("calendar")
+        if entity_component is not None and hasattr(entity_component, "get_entity"):
+            entity = entity_component.get_entity(entity_id)
+            if entity:
+                return entity
+
+        # Try via entity_platform
+        try:
+            from homeassistant.helpers.entity_platform import async_get_platforms
+
+            platforms = async_get_platforms(self.hass, "calendar")
+            for platform in platforms:
+                if entity_id in platform.entities:
+                    return platform.entities[entity_id]
+        except Exception as e:
+            _LOGGER.debug(f"Could not get calendar entity via platforms: {e}")
+
+        _LOGGER.warning(f"Could not find calendar entity: {entity_id}")
+        return None
 
     def _parse_time_spec(self, time_spec: dict) -> datetime | None:
         """Parse the time specification from LLM and return a datetime."""
@@ -735,31 +822,25 @@ class Reminders(AbstractSkill):
 
         reminders = []
         try:
+            # Get the calendar entity directly
+            calendar_entity = self._get_calendar_entity(calendar_id)
+            if calendar_entity is None:
+                qpl_flow.mark_subspan_end("get_existing_reminders")
+                return []
+
             now = self._get_current_time()
             end = now + timedelta(days=30)
 
-            result = await self.hass.services.async_call(
-                "calendar",
-                "get_events",
-                {
-                    "entity_id": calendar_id,
-                    "start_date_time": now.isoformat(),
-                    "end_date_time": end.isoformat(),
-                },
-                blocking=True,
-                return_response=True,
-            )
+            events = await calendar_entity.async_get_events(self.hass, now, end)
 
-            if result and calendar_id in result:
-                events = result[calendar_id].get("events", [])
-                for event in events:
-                    reminders.append(
-                        {
-                            "summary": event.get("summary", ""),
-                            "start": event.get("start"),
-                            "uid": event.get("uid"),
-                        }
-                    )
+            for event in events:
+                reminders.append(
+                    {
+                        "summary": event.summary or "",
+                        "start": event.start,
+                        "uid": event.uid,
+                    }
+                )
 
             point = qpl_flow.mark_subspan_end("get_existing_reminders")
             maybe(point).annotate("reminder_count", len(reminders))
@@ -782,6 +863,7 @@ class Reminders(AbstractSkill):
         prompt_template = await self.prompt_cache.get(prompt_key)
         template = Template(prompt_template, trim_blocks=True)
 
+        # Use clean summaries (without hashtags) for LLM
         reminder_summaries = [r.get("summary", "") for r in existing_reminders]
         reminders_json = json.dumps(reminder_summaries)
 
@@ -811,24 +893,17 @@ class Reminders(AbstractSkill):
             maybe(point).annotate("summary", reminder.summary)
 
             try:
-                await self.hass.services.async_call(
-                    "calendar",
-                    "delete_event",
-                    {
-                        "entity_id": reminder.calendar_id,
-                        "uid": reminder.uid,
-                    },
-                    blocking=True,
-                )
-                deleted_summaries.append(reminder.summary)
+                # Get the calendar entity directly
+                calendar_entity = self._get_calendar_entity(reminder.calendar_id)
+                if calendar_entity is not None:
+                    _LOGGER.debug(f"Deleting event with uid: {reminder.uid}")
+                    await calendar_entity.async_delete_event(reminder.uid)
+                    deleted_summaries.append(reminder.summary)
+                else:
+                    _LOGGER.warning(f"Could not get calendar entity for undo: {reminder.calendar_id}")
 
-                # Remove from tracking
-                tracking_key = f"{reminder.calendar_id}:{reminder.uid}"
-                if tracking_key in Reminders._tracked_reminders:
-                    del Reminders._tracked_reminders[tracking_key]
-
-            except Exception:
-                pass
+            except Exception as e:
+                _LOGGER.error(f"Failed to undo reminder: {e}")
 
             qpl_flow.mark_subspan_end("undo_single_reminder")
 
