@@ -88,16 +88,21 @@ class QPLFlow:
     def annotate(self, key: str, value: Any):
         self.payload[key] = value
 
+    def _close_all_subspans(self):
+        """Close all open subspans in reverse order (LIFO)."""
+        for subspan in list(reversed(self.opened_subspans)):
+            self.mark_subspan_end(subspan)
+
     def mark_success(self):
         if self.outcome == "":
-            for subspan in list(reversed(self.opened_subspans)):
-                self.mark_subspan_end(subspan)
+            self._close_all_subspans()
             self.ended = datetime.now(timezone.utc)
             self.outcome = "SUCCESS"
             self.complete_callback(self)
 
     def mark_failed(self, error: str):
         if self.outcome == "":
+            self._close_all_subspans()
             self.ended = datetime.now(timezone.utc)
             self.outcome = "FAILED"
             self.annotate("error", error)
@@ -105,6 +110,7 @@ class QPLFlow:
 
     def mark_canceled(self, annotation: str | None = None):
         if self.outcome == "":
+            self._close_all_subspans()
             if annotation is not None:
                 self.annotate("cancelation_reason", annotation)
             self.ended = datetime.now(timezone.utc)

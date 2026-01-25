@@ -42,7 +42,7 @@ class Other(AbstractSkill):
         qpl_flow.mark_subspan_begin("build_prompt")
 
         prompt_key = os.path.join(os.path.dirname(__file__), "other.md")
-        prompt_template = await self.prompt_cache.get(prompt_key)
+        prompt_template = await self.prompt_cache.get(prompt_key, request.conversation_id)
         template = Template(prompt_template, trim_blocks=True)
 
         output = template.render(user_prompt=request.text)

@@ -30,6 +30,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from .const import CONF_CHAT_MODEL, LLM_RETRY_COUNT
 from .entity import LocalLLMClient, LocalLLMConfigEntry, LocalLLMEntity
 from .prompt_cache import PromptCache
+from .conversation_history import ConversationHistoryCache
 from .maybe import maybe
 import json
 
@@ -73,6 +74,7 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
 
     skill_registry: SkillRegistry
     prompts: PromptCache
+    conversation_history: ConversationHistoryCache
     qplProvider: QPL
 
     def __init__(
@@ -86,7 +88,8 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
         super().__init__(hass, entry, subentry, client)
 
         self.qplProvider = qplProvider
-        self.prompts = PromptCache()
+        self.conversation_history = ConversationHistoryCache()
+        self.prompts = PromptCache(self.conversation_history)
         self.skill_registry = SkillRegistry(hass, self, self.prompts, qplProvider)
 
         if subentry.data.get(CONF_LLM_HASS_API):
@@ -119,7 +122,9 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
     ) -> ConversationResult:
         qpl_flow.mark_subspan_begin("building_prompt")
         prompt_path = self._make_prompt_key("entry.md")
-        entry_prompt_template = await self.prompts.get(prompt_path)
+        entry_prompt_template = await self.prompts.get(
+            prompt_path, user_input.conversation_id
+        )
         template = Template(entry_prompt_template, trim_blocks=True)
         skill_list = self.skill_registry.skill_list()
         prompt = template.render(skill_list=skill_list, prompt=user_input.text)
@@ -143,6 +148,16 @@ class LocalLLMAgent(ConversationEntity, AbstractConversationAgent, LocalLLMEntit
                 )
                 qpl_flow.mark_subspan_end("processing_user_request")
                 qpl_flow.mark_success()
+
+                # Record the exchange in conversation history
+                speech = intent_response.speech.get("plain", {}).get("speech", "")
+                if speech:
+                    self.conversation_history.add_exchange(
+                        user_input.conversation_id,
+                        user_input.text,
+                        speech,
+                    )
+
                 return ConversationResult(
                     response=intent_response, conversation_id=user_input.conversation_id
                 )

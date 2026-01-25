@@ -10,6 +10,7 @@ from .timers import Timers
 from .world_clock import WorldClock
 from .inbox_tasks import InboxTasks
 from .reminders import Reminders
+from .music import Music
 from .other import Other
 from homeassistant.components.conversation import ConversationInput
 from typing import Tuple
@@ -40,6 +41,7 @@ class SkillRegistry:
             WorldClock(hass, client, prompt_cache),
             inbox_tasks,
             reminders,
+            Music(hass, client, prompt_cache),
             Other(hass, client, prompt_cache),
         ]
         registry = {}
@@ -61,13 +63,13 @@ class SkillRegistry:
     ):
         if llm_response == "Undo":
             point = qpl_flow.mark_subspan_begin("undo")
-            skill = self._get_skill_from_history(original_request)
-            maybe(point).annotate("skill", skill.name())
+            skill = self._get_skill_from_history(original_request)            
             if skill is None:
                 err = "Can't undo or too much time passed"
                 qpl_flow.mark_failed(err)
                 response.async_set_speech(err)
                 return
+            maybe(point).annotate("skill", skill.name())
             conversation_id = original_request.conversation_id
             if conversation_id is not None:
                 del self.history[conversation_id]

@@ -176,7 +176,7 @@ class ControlDevices(AbstractSkill):
         qpl_flow.mark_subspan_begin("rendering_prompt_template")
         device_list = json.dumps(entities)
         prompt_key = os.path.join(os.path.dirname(__file__), "control_devices.md")
-        prompt_template = await self.prompt_cache.get(prompt_key)
+        prompt_template = await self.prompt_cache.get(prompt_key, request.conversation_id)
         template = Template(prompt_template, trim_blocks=True)
 
         result = template.render(

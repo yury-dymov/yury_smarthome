@@ -167,7 +167,7 @@ class ShoppingList(AbstractSkill):
         prompt_key = os.path.join(
             os.path.dirname(__file__), "shopping_list_todo_list.md"
         )
-        prompt_template = await self.prompt_cache.get(prompt_key)
+        prompt_template = await self.prompt_cache.get(prompt_key, request.conversation_id)
         template = Template(prompt_template, trim_blocks=True)
 
         output = template.render(
