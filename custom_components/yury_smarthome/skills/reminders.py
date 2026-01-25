@@ -21,8 +21,11 @@ import traceback
 
 _LOGGER = logging.getLogger(__name__)
 
-# Keywords to match notification targets
-NOTIFICATION_TARGET_KEYWORDS = ["yury_dymov", "delorean"]
+# Keywords to match notification targets by person
+NOTIFICATION_TARGETS = {
+    "yury": ["yury_dymov", "delorean"],
+    "eugenia": ["eugenia", "zhenya"],
+}
 
 # Keywords to match preferred calendar
 CALENDAR_KEYWORDS = ["yury", "local"]
@@ -164,8 +167,32 @@ class Reminders(AbstractSkill):
 
         return targets if targets else None
 
-    def _find_notification_targets(self) -> list[str]:
-        """Find notification service targets matching our keywords."""
+    def _find_notification_targets(self, target_persons: list[str] | None = None) -> list[str]:
+        """Find notification service targets matching keywords for specified persons.
+
+        Args:
+            target_persons: List of person identifiers ("yury", "eugenia", "both").
+                          Defaults to ["yury"] if None or empty.
+        """
+        # Default to Yury only
+        if not target_persons:
+            target_persons = ["yury"]
+
+        # Expand "both" to both persons
+        if "both" in target_persons:
+            target_persons = ["yury", "eugenia"]
+
+        # Collect keywords for all specified persons
+        keywords = []
+        for person in target_persons:
+            person_lower = person.lower()
+            if person_lower in NOTIFICATION_TARGETS:
+                keywords.extend(NOTIFICATION_TARGETS[person_lower])
+
+        if not keywords:
+            # Fallback to Yury if no valid persons specified
+            keywords = NOTIFICATION_TARGETS["yury"]
+
         targets = []
 
         # Get all available services
@@ -174,16 +201,16 @@ class Reminders(AbstractSkill):
 
         for service_name in notify_services:
             service_lower = service_name.lower()
-            for keyword in NOTIFICATION_TARGET_KEYWORDS:
+            for keyword in keywords:
                 if keyword.lower() in service_lower:
                     targets.append(f"notify.{service_name}")
                     break
 
         if targets:
-            _LOGGER.debug(f"Found notification targets: {targets}")
+            _LOGGER.debug(f"Found notification targets for {target_persons}: {targets}")
         else:
             _LOGGER.warning(
-                f"No notification targets found matching keywords: {NOTIFICATION_TARGET_KEYWORDS}"
+                f"No notification targets found matching keywords: {keywords}"
             )
 
         return targets
@@ -293,6 +320,10 @@ class Reminders(AbstractSkill):
                 await self._create_reminder(
                     calendar_id, json_data, response, qpl_flow
                 )
+            elif action == "update":
+                await self._update_reminder(
+                    calendar_id, json_data, existing_reminders, response, qpl_flow
+                )
             elif action == "delete":
                 await self._delete_reminder(
                     calendar_id, json_data, existing_reminders, response, qpl_flow
@@ -355,6 +386,7 @@ class Reminders(AbstractSkill):
         summary = data.get("summary", "Reminder")
         time_spec = data.get("time_spec")
         recurrence = data.get("recurrence")
+        target = data.get("target")  # "yury", "eugenia", or "both"
 
         if not time_spec:
             err = "No time was specified for the reminder"
@@ -390,10 +422,12 @@ class Reminders(AbstractSkill):
             qpl_flow.mark_subspan_end("create_reminder")
             return
 
-        # Find notification targets and create hashtag for description
-        targets = self._find_notification_targets()
+        # Find notification targets based on who should be reminded
+        target_persons = [target] if target else None
+        targets = self._find_notification_targets(target_persons)
         description = self._encode_reminder_hashtag(targets) if targets else ""
         maybe(point).annotate("description", description)
+        maybe(point).annotate("target_persons", str(target_persons))
 
         # Build kwargs for async_create_event
         event_data = {
@@ -448,7 +482,7 @@ class Reminders(AbstractSkill):
             response.async_set_speech("Failed to create reminder")
             qpl_flow.mark_subspan_end("create_reminder")
 
-    async def _delete_reminder(
+    async def _update_reminder(
         self,
         calendar_id: str,
         data: dict,
@@ -456,15 +490,15 @@ class Reminders(AbstractSkill):
         response: intent.IntentResponse,
         qpl_flow: QPLFlow,
     ):
-        """Delete an existing reminder."""
-        point = qpl_flow.mark_subspan_begin("delete_reminder")
+        """Update an existing reminder."""
+        point = qpl_flow.mark_subspan_begin("update_reminder")
 
         match_summary = data.get("match_summary", "").lower()
         maybe(point).annotate("match_summary", match_summary)
 
+        # Find the existing reminder
         best_match = None
         for reminder in existing_reminders:
-            # Compare against clean summary (without hashtag)
             summary = reminder.get("summary", "").lower()
             if match_summary in summary or summary in match_summary:
                 best_match = reminder
@@ -474,24 +508,216 @@ class Reminders(AbstractSkill):
             err = f"Could not find a reminder matching '{match_summary}'"
             qpl_flow.mark_canceled(err)
             response.async_set_speech(err)
-            qpl_flow.mark_subspan_end("delete_reminder")
+            qpl_flow.mark_subspan_end("update_reminder")
             return
 
-        uid = best_match.get("uid")
-        # Get clean summary for user display
-        summary = best_match.get("summary", "")
-
-        if not uid:
-            err = "Cannot delete this reminder - no UID found"
+        old_uid = best_match.get("uid")
+        if not old_uid:
+            err = "Cannot update this reminder - no UID found"
             qpl_flow.mark_failed(err)
+            response.async_set_speech(err)
+            qpl_flow.mark_subspan_end("update_reminder")
+            return
+
+        maybe(point).annotate("old_uid", old_uid)
+
+        # Get the calendar entity
+        calendar_entity = self._get_calendar_entity(calendar_id)
+        if calendar_entity is None:
+            err = f"Could not find calendar entity: {calendar_id}"
+            qpl_flow.mark_failed(err)
+            response.async_set_speech(err)
+            qpl_flow.mark_subspan_end("update_reminder")
+            return
+
+        # Extract update fields - use new values if provided, otherwise keep existing
+        updates = data.get("updates", {})
+
+        # Summary: use new if provided, otherwise keep existing
+        new_summary = updates.get("summary") or best_match.get("summary", "Reminder")
+
+        # Target: use new if provided, otherwise decode from existing description
+        new_target = updates.get("target")
+        if not new_target:
+            # Try to get from existing description
+            existing_desc = best_match.get("description", "")
+            existing_targets = self._decode_reminder_hashtag(existing_desc)
+            # Keep as-is (will be re-encoded below)
+
+        # Time: use new if provided, otherwise keep existing
+        new_time_spec = updates.get("time_spec")
+        if new_time_spec:
+            start_dt = self._parse_time_spec(new_time_spec)
+            if start_dt is None:
+                err = "Could not parse the new time specification"
+                qpl_flow.mark_failed(err)
+                response.async_set_speech(err)
+                qpl_flow.mark_subspan_end("update_reminder")
+                return
+        else:
+            # Keep existing time
+            start_dt = best_match.get("start")
+            if isinstance(start_dt, str):
+                from dateutil import parser
+                start_dt = parser.parse(start_dt)
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=self._get_timezone())
+
+        end_dt = start_dt + timedelta(hours=1)
+
+        # Recurrence: use new if provided, otherwise keep existing
+        new_recurrence = updates.get("recurrence")
+        if new_recurrence is None and "recurrence" not in updates:
+            # Keep existing rrule if not explicitly updating
+            existing_rrule = best_match.get("rrule")
+        else:
+            existing_rrule = None
+
+        maybe(point).annotate("new_summary", new_summary)
+        maybe(point).annotate("new_target", new_target)
+        maybe(point).annotate("start_dt", start_dt.isoformat())
+
+        # Find notification targets
+        target_persons = [new_target] if new_target else None
+        targets = self._find_notification_targets(target_persons)
+        description = self._encode_reminder_hashtag(targets) if targets else ""
+
+        try:
+            # Delete old event first
+            await calendar_entity.async_delete_event(old_uid)
+            _LOGGER.debug(f"Deleted old reminder with uid: {old_uid}")
+
+            # Create new event with updated data
+            event_data = {
+                "summary": new_summary,
+                "dtstart": start_dt,
+                "dtend": end_dt,
+            }
+
+            if description:
+                event_data["description"] = description
+
+            # Handle recurrence
+            if new_recurrence:
+                rrule = self._build_rrule(new_recurrence, start_dt)
+                if rrule:
+                    event_data["rrule"] = rrule
+            elif existing_rrule:
+                event_data["rrule"] = existing_rrule
+
+            # Generate new UID
+            uid = self._generate_uid(new_summary, start_dt, end_dt)
+            event_data["uid"] = uid
+
+            await calendar_entity.async_create_event(**event_data)
+
+            # Track for undo
+            self.created_reminders.append(
+                CreatedReminder(calendar_id=calendar_id, uid=uid, summary=new_summary)
+            )
+
+            qpl_flow.mark_subspan_end("update_reminder")
+
+            # Build response message
+            changes = []
+            if updates.get("summary"):
+                changes.append(f"renamed to '{new_summary}'")
+            if updates.get("target"):
+                target_name = "both" if new_target == "both" else new_target.capitalize()
+                changes.append(f"now notifies {target_name}")
+            if updates.get("time_spec"):
+                time_str = self._format_datetime_friendly(start_dt)
+                changes.append(f"moved to {time_str}")
+
+            if changes:
+                response.async_set_speech(f"Reminder updated: {', '.join(changes)}")
+            else:
+                response.async_set_speech("Reminder updated")
+
+        except Exception:
+            qpl_flow.mark_failed(traceback.format_exc())
+            response.async_set_speech("Failed to update reminder")
+            qpl_flow.mark_subspan_end("update_reminder")
+
+    async def _delete_reminder(
+        self,
+        calendar_id: str,
+        data: dict,
+        existing_reminders: list[dict],
+        response: intent.IntentResponse,
+        qpl_flow: QPLFlow,
+    ):
+        """Delete one or more existing reminders."""
+        point = qpl_flow.mark_subspan_begin("delete_reminder")
+
+        match_summary = data.get("match_summary", "").lower() if data.get("match_summary") else None
+        delete_all = data.get("delete_all", False)
+        time_filter = data.get("time_filter")  # "today", "tomorrow", or specific date
+
+        maybe(point).annotate("match_summary", match_summary)
+        maybe(point).annotate("delete_all", delete_all)
+        maybe(point).annotate("time_filter", time_filter)
+
+        # Find reminders to delete
+        reminders_to_delete = []
+        now = self._get_current_time()
+
+        for reminder in existing_reminders:
+            summary = reminder.get("summary", "").lower()
+            start = reminder.get("start")
+
+            # Convert start to datetime if needed
+            if isinstance(start, str):
+                from dateutil import parser
+                start = parser.parse(start)
+            if start and start.tzinfo is None:
+                start = start.replace(tzinfo=self._get_timezone())
+
+            # Check time filter
+            if time_filter:
+                if not start:
+                    continue
+                if time_filter == "today" and start.date() != now.date():
+                    continue
+                elif time_filter == "tomorrow" and start.date() != (now + timedelta(days=1)).date():
+                    continue
+                elif time_filter not in ("today", "tomorrow"):
+                    # Try parsing as date
+                    try:
+                        filter_date = datetime.strptime(time_filter, "%Y-%m-%d").date()
+                        if start.date() != filter_date:
+                            continue
+                    except ValueError:
+                        pass
+
+            # Check summary match (if provided)
+            if match_summary:
+                if match_summary not in summary and summary not in match_summary:
+                    continue
+
+            # If delete_all with time_filter, add all matching
+            # If not delete_all, only add first match
+            reminders_to_delete.append(reminder)
+            if not delete_all and not time_filter:
+                break  # Only delete first match for single delete
+
+        if not reminders_to_delete:
+            if time_filter:
+                err = f"No reminders found for {time_filter}"
+            elif match_summary:
+                err = f"Could not find a reminder matching '{match_summary}'"
+            else:
+                err = "No reminders found to delete"
+            qpl_flow.mark_canceled(err)
             response.async_set_speech(err)
             qpl_flow.mark_subspan_end("delete_reminder")
             return
 
-        maybe(point).annotate("uid", uid)
-        maybe(point).annotate("summary", summary)
+        # For single delete without delete_all flag, just use first match
+        if not delete_all and not time_filter:
+            reminders_to_delete = [reminders_to_delete[0]]
 
-        # Get the calendar entity directly
+        # Get the calendar entity
         calendar_entity = self._get_calendar_entity(calendar_id)
         if calendar_entity is None:
             err = f"Could not find calendar entity: {calendar_id}"
@@ -500,16 +726,35 @@ class Reminders(AbstractSkill):
             qpl_flow.mark_subspan_end("delete_reminder")
             return
 
-        try:
-            await calendar_entity.async_delete_event(uid)
+        # Delete all matched reminders
+        deleted_summaries = []
+        failed_count = 0
 
-            qpl_flow.mark_subspan_end("delete_reminder")
-            response.async_set_speech(f"Reminder '{summary}' deleted")
+        for reminder in reminders_to_delete:
+            uid = reminder.get("uid")
+            summary = reminder.get("summary", "")
 
-        except Exception:
-            qpl_flow.mark_failed(traceback.format_exc())
-            response.async_set_speech("Failed to delete reminder")
-            qpl_flow.mark_subspan_end("delete_reminder")
+            if not uid:
+                failed_count += 1
+                continue
+
+            try:
+                await calendar_entity.async_delete_event(uid)
+                deleted_summaries.append(summary)
+                _LOGGER.debug(f"Deleted reminder: {summary} (uid: {uid})")
+            except Exception as e:
+                _LOGGER.warning(f"Failed to delete reminder {summary}: {e}")
+                failed_count += 1
+
+        qpl_flow.mark_subspan_end("delete_reminder")
+
+        # Build response message
+        if not deleted_summaries:
+            response.async_set_speech("Failed to delete reminders")
+        elif len(deleted_summaries) == 1:
+            response.async_set_speech(f"Reminder '{deleted_summaries[0]}' deleted")
+        else:
+            response.async_set_speech(f"Deleted {len(deleted_summaries)} reminders")
 
     def _generate_uid(
         self,
@@ -838,7 +1083,10 @@ class Reminders(AbstractSkill):
                     {
                         "summary": event.summary or "",
                         "start": event.start,
+                        "end": event.end,
                         "uid": event.uid,
+                        "description": event.description or "",
+                        "rrule": getattr(event, "rrule", None),
                     }
                 )
 
