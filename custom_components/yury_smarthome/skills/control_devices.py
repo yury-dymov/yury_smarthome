@@ -2,7 +2,9 @@ from .abstract_skill import AbstractSkill
 from homeassistant.components import conversation
 from homeassistant.components.homeassistant.exposed_entities import async_should_expose
 from homeassistant.helpers import entity_registry, area_registry, device_registry
+from dataclasses import dataclass
 import json
+import logging
 import os
 from jinja2 import Template
 from homeassistant.helpers import intent
@@ -13,8 +15,24 @@ from custom_components.yury_smarthome.prompt_cache import PromptCache
 import traceback
 
 
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class DeviceAction:
+    """Tracks a device action for undo support."""
+    entity_id: str
+    action: str  # "turn on", "turn off", "set brightness", "brighten", "darken"
+    previous_state: str | None = None  # "on" or "off"
+    previous_brightness: int | None = None  # 0-255 (HA native scale)
+
+
 class ControlDevices(AbstractSkill):
-    intents: list[intent.Intent]
+    last_actions: list[DeviceAction]
+
+    def __init__(self, hass, client, prompt_cache):
+        super().__init__(hass, client, prompt_cache)
+        self.last_actions = []
 
     def name(self) -> str:
         return "Control Devices Other Than Music"
@@ -25,6 +43,7 @@ class ControlDevices(AbstractSkill):
         response: intent.IntentResponse,
         qpl_flow: QPLFlow,
     ):
+        self.last_actions = []
         qpl_flow.mark_subspan_begin("building_prompt")
         prompt = await self._build_prompt(request, qpl_flow)
         point = qpl_flow.mark_subspan_end("building_prompt")
@@ -35,94 +54,297 @@ class ControlDevices(AbstractSkill):
         llm_response = llm_response.replace("```json", "")
         llm_response = llm_response.replace("```", "")
         maybe(point).annotate("llm_response", llm_response)
-        did_something = False
+
         try:
             json_data = json.loads(llm_response)
+            actions_performed = []
+
             for device in json_data["devices"]:
-                entity_id = device["entity_id"]
-                action = device["action"]
+                entity_id = device.get("entity_id")
+                action = device.get("action")
+                brightness = device.get("brightness")
+
                 if entity_id is None or action is None:
                     continue
-                if action == "turn on":
-                    action_intent = intent.INTENT_TURN_ON
-                elif action == "turn off":
-                    action_intent = intent.INTENT_TURN_OFF
-                else:
-                    continue
-                did_something = True
-                intent_item = intent.Intent(
-                    self.hass,
-                    "yury",
-                    action_intent,
-                    {"name": {"value": entity_id}},
-                    None,
-                    intent.Context(),
-                    request.language,
-                )
-                point = qpl_flow.mark_subspan_begin("sending_intent")
-                maybe(point).annotate("action", action_intent)
-                maybe(point).annotate("entity_id", entity_id)
-                handler = self.hass.data.get(intent.DATA_KEY, {}).get(action_intent)
-                await handler.async_handle(intent_item)
-                qpl_flow.mark_subspan_end("sending_intent")
-                self.intents.append(intent_item)
 
-            if did_something:
-                response.async_set_speech("All done")
+                point = qpl_flow.mark_subspan_begin("executing_action")
+                maybe(point).annotate("action", action)
+                maybe(point).annotate("entity_id", entity_id)
+                maybe(point).annotate("brightness", brightness)
+
+                try:
+                    if action == "turn on":
+                        await self._turn_on(entity_id, qpl_flow)
+                        actions_performed.append("turned on")
+                    elif action == "turn off":
+                        await self._turn_off(entity_id, qpl_flow)
+                        actions_performed.append("turned off")
+                    elif action == "set brightness":
+                        if brightness is not None:
+                            await self._set_brightness(entity_id, brightness, qpl_flow)
+                            actions_performed.append(f"set brightness to {brightness}%")
+                    elif action == "brighten":
+                        amount = brightness if brightness is not None else 20
+                        await self._adjust_brightness(entity_id, amount, qpl_flow)
+                        actions_performed.append("increased brightness")
+                    elif action == "darken":
+                        amount = brightness if brightness is not None else 20
+                        await self._adjust_brightness(entity_id, -amount, qpl_flow)
+                        actions_performed.append("decreased brightness")
+                finally:
+                    qpl_flow.mark_subspan_end("executing_action")
+
+            if actions_performed:
+                # Use descriptive response so conversation history is useful for follow-ups
+                response.async_set_speech(", ".join(set(actions_performed)))
             else:
                 response.async_set_speech("Didn't find any device")
         except json.JSONDecodeError as e:
             qpl_flow.mark_failed(e.msg)
             response.async_set_speech("Failed")
-        except Exception as e:
+        except Exception:
             qpl_flow.mark_failed(traceback.format_exc())
             response.async_set_speech("Failed to control devices")
 
+    async def _turn_on(self, entity_id: str, qpl_flow: QPLFlow):
+        """Turn on a device."""
+        # Get current state for undo
+        state = self.hass.states.get(entity_id)
+        previous_state = state.state if state else None
+        previous_brightness = None
+        if state and "brightness" in state.attributes:
+            previous_brightness = state.attributes["brightness"]
+
+        await self.hass.services.async_call(
+            "homeassistant",
+            "turn_on",
+            {"entity_id": entity_id},
+            blocking=True,
+        )
+
+        self.last_actions.append(DeviceAction(
+            entity_id=entity_id,
+            action="turn on",
+            previous_state=previous_state,
+            previous_brightness=previous_brightness,
+        ))
+
+    async def _turn_off(self, entity_id: str, qpl_flow: QPLFlow):
+        """Turn off a device."""
+        # Get current state for undo
+        state = self.hass.states.get(entity_id)
+        previous_state = state.state if state else None
+        previous_brightness = None
+        if state and "brightness" in state.attributes:
+            previous_brightness = state.attributes["brightness"]
+
+        await self.hass.services.async_call(
+            "homeassistant",
+            "turn_off",
+            {"entity_id": entity_id},
+            blocking=True,
+        )
+
+        self.last_actions.append(DeviceAction(
+            entity_id=entity_id,
+            action="turn off",
+            previous_state=previous_state,
+            previous_brightness=previous_brightness,
+        ))
+
+    async def _set_brightness(self, entity_id: str, brightness_pct: int, qpl_flow: QPLFlow):
+        """Set brightness to an absolute value (0-100%)."""
+        # Get current state for undo
+        state = self.hass.states.get(entity_id)
+        previous_state = state.state if state else None
+        previous_brightness = None
+        if state and "brightness" in state.attributes:
+            previous_brightness = state.attributes["brightness"]
+
+        # Convert percentage (0-100) to HA brightness (0-255)
+        brightness_pct = max(0, min(100, brightness_pct))
+        brightness_ha = int(brightness_pct * 255 / 100)
+
+        # Use light domain for brightness control
+        domain = entity_id.split(".")[0]
+        if domain == "light":
+            await self.hass.services.async_call(
+                "light",
+                "turn_on",
+                {"entity_id": entity_id, "brightness": brightness_ha},
+                blocking=True,
+            )
+        else:
+            # For non-lights, just turn on/off based on brightness
+            if brightness_pct > 0:
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "turn_on",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+            else:
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "turn_off",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+
+        self.last_actions.append(DeviceAction(
+            entity_id=entity_id,
+            action="set brightness",
+            previous_state=previous_state,
+            previous_brightness=previous_brightness,
+        ))
+
+    async def _adjust_brightness(self, entity_id: str, amount_pct: int, qpl_flow: QPLFlow):
+        """Adjust brightness by a relative amount (-100 to +100%)."""
+        # Get current state for undo and current brightness
+        state = self.hass.states.get(entity_id)
+        previous_state = state.state if state else None
+        previous_brightness = None
+        current_brightness_pct = 50  # Default if unknown
+
+        if state:
+            previous_brightness = state.attributes.get("brightness")
+            if previous_brightness is not None:
+                current_brightness_pct = int(previous_brightness * 100 / 255)
+            elif state.state == "on":
+                current_brightness_pct = 100
+            elif state.state == "off":
+                current_brightness_pct = 0
+
+        # Calculate new brightness
+        new_brightness_pct = max(0, min(100, current_brightness_pct + amount_pct))
+        new_brightness_ha = int(new_brightness_pct * 255 / 100)
+
+        # Use light domain for brightness control
+        domain = entity_id.split(".")[0]
+        if domain == "light":
+            if new_brightness_pct > 0:
+                await self.hass.services.async_call(
+                    "light",
+                    "turn_on",
+                    {"entity_id": entity_id, "brightness": new_brightness_ha},
+                    blocking=True,
+                )
+            else:
+                await self.hass.services.async_call(
+                    "light",
+                    "turn_off",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+        else:
+            # For non-lights, just turn on/off
+            if new_brightness_pct > 0:
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "turn_on",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+            else:
+                await self.hass.services.async_call(
+                    "homeassistant",
+                    "turn_off",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+
+        self.last_actions.append(DeviceAction(
+            entity_id=entity_id,
+            action="brighten" if amount_pct > 0 else "darken",
+            previous_state=previous_state,
+            previous_brightness=previous_brightness,
+        ))
+
     async def undo(self, response: intent.IntentResponse, qpl_flow: QPLFlow):
         point = qpl_flow.mark_subspan_begin("control_devices_undo")
-        if len(self.intents) == 0:
-            maybe(point).annotate("no intents")
-            response.async_set_speech("All done")
-            point = qpl_flow.mark_subspan_end("control_devices_undo")
-            return
 
-        for intent_elem in self.intents:
-            if intent_elem.intent_type == intent.INTENT_TURN_ON:
-                intent_elem.intent_type = intent.INTENT_TURN_OFF
-            elif intent_elem.intent_type == intent.INTENT_TURN_OFF:
-                intent_elem.intent_type = intent.INTENT_TURN_ON
-            else:
-                err = (
-                    "Unsupported intent to undo in control devices skill: "
-                    + intent_elem.intent_type
-                )
-                response.async_set_speech(err)
-                qpl_flow.mark_failed(err)
+        try:
+            if not self.last_actions:
+                maybe(point).annotate("no actions to undo")
+                response.async_set_speech("Nothing to undo")
                 return
 
-            point = qpl_flow.mark_subspan_begin("undo_action")
-            handler = self.hass.data.get(intent.DATA_KEY, {}).get(
-                intent_elem.intent_type
-            )
-            maybe(point).annotate("intent_type", intent_elem.intent_type)
-            maybe(point).annotate("entity_id", intent_elem.slots["name"]["value"])
-            undo_response = await handler.async_handle(intent_elem)
-            point = qpl_flow.mark_subspan_end("undo_action")
-            maybe(point).annotate("result", undo_response.response_type.value)
+            for action in self.last_actions:
+                maybe(point).annotate("undoing", action.action)
+                maybe(point).annotate("entity_id", action.entity_id)
 
-        response.async_set_speech("All done")
-        self.intents = []
-        point = qpl_flow.mark_subspan_end("control_devices_undo")
+                domain = action.entity_id.split(".")[0]
+
+                if action.action in ("turn on", "turn off"):
+                    # Reverse the on/off action
+                    if action.previous_state == "on":
+                        if domain == "light" and action.previous_brightness is not None:
+                            await self.hass.services.async_call(
+                                "light",
+                                "turn_on",
+                                {"entity_id": action.entity_id, "brightness": action.previous_brightness},
+                                blocking=True,
+                            )
+                        else:
+                            await self.hass.services.async_call(
+                                "homeassistant",
+                                "turn_on",
+                                {"entity_id": action.entity_id},
+                                blocking=True,
+                            )
+                    elif action.previous_state == "off":
+                        await self.hass.services.async_call(
+                            "homeassistant",
+                            "turn_off",
+                            {"entity_id": action.entity_id},
+                            blocking=True,
+                        )
+                    else:
+                        # Unknown previous state, reverse the action
+                        if action.action == "turn on":
+                            await self.hass.services.async_call(
+                                "homeassistant",
+                                "turn_off",
+                                {"entity_id": action.entity_id},
+                                blocking=True,
+                            )
+                        else:
+                            await self.hass.services.async_call(
+                                "homeassistant",
+                                "turn_on",
+                                {"entity_id": action.entity_id},
+                                blocking=True,
+                            )
+
+                elif action.action in ("set brightness", "brighten", "darken"):
+                    # Restore previous brightness
+                    if action.previous_brightness is not None:
+                        if domain == "light":
+                            await self.hass.services.async_call(
+                                "light",
+                                "turn_on",
+                                {"entity_id": action.entity_id, "brightness": action.previous_brightness},
+                                blocking=True,
+                            )
+                    elif action.previous_state == "off":
+                        await self.hass.services.async_call(
+                            "homeassistant",
+                            "turn_off",
+                            {"entity_id": action.entity_id},
+                            blocking=True,
+                        )
+
+            self.last_actions = []
+            response.async_set_speech("All done")
+        finally:
+            qpl_flow.mark_subspan_end("control_devices_undo")
 
     async def _build_prompt(self, request: ConversationInput, qpl_flow: QPLFlow) -> str:
         qpl_flow.mark_subspan_begin("fetching_device_list_from_ha")
         entities = []
-        self.intents = []
         er = entity_registry.async_get(self.hass)
         dr = device_registry.async_get(self.hass)
         ar = area_registry.async_get(self.hass)
-        entity_dict = {}
-        device_dict = {}
         user_location = None
 
         # Determine user's location from the device they're using (e.g., voice assistant)
@@ -136,31 +358,26 @@ class ControlDevices(AbstractSkill):
         for state in self.hass.states.async_all():
             if not async_should_expose(self.hass, conversation.DOMAIN, state.entity_id):
                 continue
-            entry = {}
-            entry["entity_id"] = state.entity_id
-            entity_dict[state.entity_id] = state
+
             entity = er.async_get(state.entity_id)
             device = None
             if entity and entity.device_id:
                 device = dr.async_get(entity.device_id)
-                device_dict[state.entity_id] = entity.device_id
 
             if state.state not in {"on", "off"}:
                 continue
 
-            attributes = dict(state.attributes)
-            attributes["state"] = state.state
-            entry["state"] = state.state
-            entry["friendly_name"] = state.name
+            entry = {
+                "entity_id": state.entity_id,
+                "state": state.state,
+                "friendly_name": state.name,
+            }
 
-            if entity:
-                if entity.aliases:
-                    attributes["aliases"] = entity.aliases
-
-                if entity.unit_of_measurement:
-                    attributes["state"] = (
-                        attributes["state"] + " " + entity.unit_of_measurement
-                    )
+            # Include brightness for lights
+            if state.entity_id.startswith("light."):
+                brightness_ha = state.attributes.get("brightness")
+                if brightness_ha is not None:
+                    entry["brightness"] = int(brightness_ha * 100 / 255)
 
             # area could be on device or entity. prefer device area
             area_id = None
@@ -172,8 +389,6 @@ class ControlDevices(AbstractSkill):
             if area_id:
                 area = ar.async_get_area(area_id)
                 if area:
-                    attributes["area_id"] = area.id
-                    attributes["area_name"] = area.name
                     entry["area"] = area.name
 
             entities.append(entry)
