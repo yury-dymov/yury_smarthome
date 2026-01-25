@@ -497,12 +497,28 @@ class Reminders(AbstractSkill):
         maybe(point).annotate("match_summary", match_summary)
 
         # Find the existing reminder
+        # For recurring events, we need to find the EARLIEST instance (series start)
         best_match = None
+        all_matches = []
         for reminder in existing_reminders:
             summary = reminder.get("summary", "").lower()
             if match_summary in summary or summary in match_summary:
-                best_match = reminder
-                break
+                all_matches.append(reminder)
+
+        if all_matches:
+            # Sort by start time to get the first instance (original series start)
+            def get_sort_key(r):
+                start = r.get("start")
+                if start is None:
+                    return datetime.max.replace(tzinfo=self._get_timezone())
+                if isinstance(start, str):
+                    from dateutil import parser
+                    start = parser.parse(start)
+                if start.tzinfo is None:
+                    start = start.replace(tzinfo=self._get_timezone())
+                return start
+            all_matches.sort(key=get_sort_key)
+            best_match = all_matches[0]
 
         if not best_match:
             err = f"Could not find a reminder matching '{match_summary}'"
@@ -511,6 +527,8 @@ class Reminders(AbstractSkill):
             qpl_flow.mark_subspan_end("update_reminder")
             return
 
+        maybe(point).annotate("matches_found", len(all_matches))
+        maybe(point).annotate("is_recurring", best_match.get("rrule") is not None)
         old_uid = best_match.get("uid")
         if not old_uid:
             err = "Cannot update this reminder - no UID found"
@@ -538,11 +556,11 @@ class Reminders(AbstractSkill):
 
         # Target: use new if provided, otherwise decode from existing description
         new_target = updates.get("target")
+        existing_targets = None
         if not new_target:
-            # Try to get from existing description
+            # Try to get from existing description to preserve current targets
             existing_desc = best_match.get("description", "")
             existing_targets = self._decode_reminder_hashtag(existing_desc)
-            # Keep as-is (will be re-encoded below)
 
         # Time: use new if provided, otherwise keep existing
         new_time_spec = updates.get("time_spec")
@@ -578,8 +596,15 @@ class Reminders(AbstractSkill):
         maybe(point).annotate("start_dt", start_dt.isoformat())
 
         # Find notification targets
-        target_persons = [new_target] if new_target else None
-        targets = self._find_notification_targets(target_persons)
+        if new_target:
+            target_persons = [new_target]
+            targets = self._find_notification_targets(target_persons)
+        elif existing_targets:
+            # Preserve existing targets from the original event
+            targets = existing_targets
+        else:
+            # Default to yury
+            targets = self._find_notification_targets(None)
         description = self._encode_reminder_hashtag(targets) if targets else ""
 
         try:
