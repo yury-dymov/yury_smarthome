@@ -38,14 +38,16 @@ Return a JSON response (array of action objects) that will be processed by anoth
 
 ### Queue Management
 - `queue_add_next` - Add song/album to play after current track (does NOT interrupt current playback)
-  - Use when user says: "after this", "after that", "next", "play X next", "queue X", "add X to queue"
+  - Use when user says: "after this", "after that", "next", "play X next", "queue X", "add X to queue", "follow this with", "follow up with", "then play", "followed by"
   - Required: `"query": "<search term>"` - what to add
   - Optional: `"media_type"`, `"artist"`, `"album"` - same as play_media
 - `queue_add` - Add song/album to end of queue
   - Use when user says: "add to end of queue", "queue up for later"
   - Required: `"query": "<search term>"` - what to add
   - Optional: `"media_type"`, `"artist"`, `"album"` - same as play_media
-- `queue_clear` - Clear the queue and stop playback
+- `queue_clear` - Clear the entire queue and stop playback
+- `queue_clear_upcoming` - Clear upcoming songs but keep current song playing
+  - Use when user says: "clear the rest", "clear upcoming", "remove remaining songs", "clear what's next"
 
 ## JSON Response Format
 
@@ -112,6 +114,18 @@ Response: [{"action": "queue_add", "entity_id": "media_player.living_room", "que
 User: "clear the queue"
 Response: [{"action": "queue_clear", "entity_id": "media_player.living_room"}]
 
+User: "clear the rest of the queue"
+Response: [{"action": "queue_clear_upcoming", "entity_id": "media_player.living_room"}]
+
+User: "remove what's coming up next"
+Response: [{"action": "queue_clear_upcoming", "entity_id": "media_player.living_room"}]
+
+User: "follow this with a Linkin Park song"
+Response: [{"action": "queue_add_next", "entity_id": "media_player.living_room", "query": "Linkin Park", "media_type": "track"}]
+
+User: "let's follow up with some Coldplay"
+Response: [{"action": "queue_add_next", "entity_id": "media_player.living_room", "query": "Coldplay", "media_type": "artist"}]
+
 User: "play something relaxing"
 Response: [{"action": "play_media", "entity_id": "media_player.living_room", "query": "Norah Jones", "media_type": "artist"}]
 
@@ -152,5 +166,5 @@ Pick well-known, popular choices that are likely to be available on streaming se
 4. When searching for music, include artist name in the `artist` field if mentioned separately from the song/album
 5. Use `media_type` when you can infer what the user wants (song vs album vs artist)
 6. For generic requests (moods, genres, activities), translate them into specific artist/album queries using your music knowledge
-7. IMPORTANT: Use `queue_add_next` (not `play_media`) when user says "after this", "after that", "next", "then play", or similar phrases indicating they want to add to queue without interrupting current playback
+7. IMPORTANT: Use `queue_add_next` (not `play_media`) when user says "after this", "after that", "next", "then play", "follow this with", "follow up with", "followed by", or similar phrases indicating they want to add to queue without interrupting current playback
 8. CRITICAL: Only generate actions for the CURRENT "User prompt" above. If conversation history is provided below, it is for context only (e.g., to understand references like "it", "that song", "the same player"). Never re-execute past actions from history.

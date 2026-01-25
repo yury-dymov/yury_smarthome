@@ -121,6 +121,8 @@ class Music(AbstractSkill):
                     )
                 elif action == "queue_clear":
                     result = await self._queue_clear(entity_id, qpl_flow)
+                elif action == "queue_clear_upcoming":
+                    result = await self._queue_clear_upcoming(entity_id, qpl_flow)
                 else:
                     messages.append(f"Unknown action: {action}")
                     continue
@@ -522,6 +524,60 @@ class Music(AbstractSkill):
             return "Failed to clear queue"
         finally:
             qpl_flow.mark_subspan_end("queue_clear")
+
+    async def _queue_clear_upcoming(self, entity_id: str, qpl_flow: QPLFlow) -> str:
+        """Clear upcoming songs in the queue but keep current song playing."""
+        point = qpl_flow.mark_subspan_begin("queue_clear_upcoming")
+        maybe(point).annotate("entity_id", entity_id)
+
+        try:
+            config_entry = await self._get_music_assistant_config_entry()
+
+            if config_entry:
+                # Use Music Assistant's queue management
+                try:
+                    # Music Assistant uses mass.queue_command service
+                    await self.hass.services.async_call(
+                        "mass",
+                        "queue_command",
+                        {
+                            "entity_id": entity_id,
+                            "command": "clear",
+                            "uri": "upcoming",  # Clear only upcoming, not current
+                        },
+                        blocking=True,
+                    )
+                    self.last_actions.append(MusicAction("queue_clear_upcoming", entity_id))
+                    return "Cleared upcoming songs"
+                except Exception:
+                    _LOGGER.debug(f"mass.queue_command failed: {traceback.format_exc()}")
+                    pass
+
+                # Alternative: Try music_assistant service
+                try:
+                    await self.hass.services.async_call(
+                        "music_assistant",
+                        "queue_command",
+                        {
+                            "entity_id": entity_id,
+                            "command": "clear",
+                        },
+                        blocking=True,
+                    )
+                    self.last_actions.append(MusicAction("queue_clear_upcoming", entity_id))
+                    return "Cleared upcoming songs"
+                except Exception:
+                    _LOGGER.debug(f"music_assistant.queue_command failed: {traceback.format_exc()}")
+                    pass
+
+            # Fallback: For players without dedicated queue management,
+            # we can't selectively clear - inform user
+            return "Cannot clear upcoming songs on this player"
+        except Exception:
+            _LOGGER.warning(f"Failed to clear upcoming: {traceback.format_exc()}")
+            return "Failed to clear upcoming songs"
+        finally:
+            qpl_flow.mark_subspan_end("queue_clear_upcoming")
 
     async def _get_music_assistant_config_entry(self) -> str | None:
         """Get the Music Assistant config entry ID if available."""
