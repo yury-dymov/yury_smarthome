@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 from homeassistant.components.conversation import ConversationInput
 from homeassistant.components.calendar import CalendarEntity
+from homeassistant.components.todo.intent import INTENT_LIST_ADD_ITEM
 from custom_components.yury_smarthome.entity import LocalLLMEntity
 from custom_components.yury_smarthome.prompt_cache import PromptCache
 from custom_components.yury_smarthome.qpl import QPL, QPLFlow
@@ -224,6 +225,7 @@ class Reminders(AbstractSkill):
 
         message = f"Reminder: {summary}"
         did_sent_at_least_once = False
+        yury_was_notified = False
 
         for target in targets:
             try:
@@ -244,17 +246,85 @@ class Reminders(AbstractSkill):
                 did_sent_at_least_once = True
                 qpl_flow.mark_subspan_end("send_to_target")
                 _LOGGER.info(f"Reminder notification sent to {target}: {message}")
+
+                # Check if this target is Yury
+                target_lower = target.lower()
+                for yury_keyword in NOTIFICATION_TARGETS.get("yury", []):
+                    if yury_keyword.lower() in target_lower:
+                        yury_was_notified = True
+                        break
             except Exception as e:
                 point = qpl_flow.mark_subspan_end("send_to_target")
                 err = f"Failed to send notification to {target}: {e}"
                 maybe(point).annotate("error", err)
                 _LOGGER.warning(err)
 
+        # Add to todo list if Yury was notified
+        if yury_was_notified:
+            await self._add_reminder_to_todo(summary, qpl_flow)
+
         qpl_flow.mark_subspan_end("send_reminder_notification")
         if did_sent_at_least_once:
             qpl_flow.mark_success()
         else:
             qpl_flow.mark_failed("failed to notify")
+
+    async def _add_reminder_to_todo(self, summary: str, qpl_flow: QPLFlow):
+        """Add a fired reminder to the todo list."""
+        point = qpl_flow.mark_subspan_begin("add_reminder_to_todo")
+        maybe(point).annotate("summary", summary)
+
+        try:
+            # Find a todo list (prefer one with "inbox" or "tasks" in the name)
+            todo_entity_id = None
+            for state in self.hass.states.async_all():
+                if not state.entity_id.startswith("todo."):
+                    continue
+                entity_lower = state.entity_id.lower()
+                name_lower = (state.name or "").lower()
+                if "inbox" in entity_lower or "inbox" in name_lower:
+                    todo_entity_id = state.entity_id
+                    break
+                if "task" in entity_lower or "task" in name_lower:
+                    todo_entity_id = state.entity_id
+                    # Don't break, keep looking for "inbox"
+
+            if not todo_entity_id:
+                # Just use the first todo list
+                for state in self.hass.states.async_all():
+                    if state.entity_id.startswith("todo."):
+                        todo_entity_id = state.entity_id
+                        break
+
+            if not todo_entity_id:
+                _LOGGER.warning("No todo list found for adding reminder")
+                qpl_flow.mark_subspan_end("add_reminder_to_todo")
+                return
+
+            maybe(point).annotate("todo_entity_id", todo_entity_id)
+
+            # Use the intent system to add the item
+            intent_item = intent.Intent(
+                self.hass,
+                "yury",
+                INTENT_LIST_ADD_ITEM,
+                {"name": {"value": todo_entity_id}, "item": {"value": summary}},
+                None,
+                intent.Context(),
+                "en",
+            )
+
+            handler = self.hass.data.get(intent.DATA_KEY, {}).get(INTENT_LIST_ADD_ITEM)
+            if handler:
+                await handler.async_handle(intent_item)
+                _LOGGER.info(f"Added reminder to todo list: {summary}")
+            else:
+                _LOGGER.warning("No handler found for INTENT_LIST_ADD_ITEM")
+
+        except Exception as e:
+            _LOGGER.warning(f"Failed to add reminder to todo list: {e}")
+
+        qpl_flow.mark_subspan_end("add_reminder_to_todo")
 
     def set_inbox_tasks_skill(self, skill: "AbstractSkill"):
         """Set reference to inbox_tasks skill for delegation."""
