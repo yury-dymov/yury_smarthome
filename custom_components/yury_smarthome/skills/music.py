@@ -827,6 +827,14 @@ class Music(AbstractSkill):
             ar = area_registry.async_get(self.hass)
             user_location = None
 
+            # Determine user's location from the device they're using (e.g., voice assistant)
+            if request.device_id:
+                user_device = dr.async_get(request.device_id)
+                if user_device and user_device.area_id:
+                    user_area = ar.async_get_area(user_device.area_id)
+                    if user_area:
+                        user_location = user_area.name
+
             for state in self.hass.states.async_all():
                 if not state.entity_id.startswith("media_player."):
                     continue
@@ -868,8 +876,6 @@ class Music(AbstractSkill):
                         area = ar.async_get_area(area_id)
                         if area:
                             entry["area"] = area.name
-                            if device and device.id == request.device_id:
-                                user_location = area.name
 
                 players.append(entry)
 
