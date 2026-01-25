@@ -30,11 +30,20 @@ Return a JSON response (array of action objects) that will be processed by anoth
 - `unmute` - Unmute the player
 
 ### Play Music
-- `play_media` - Search and play music
+- `play_media` - Search and play music immediately (replaces current queue)
   - Required: `"query": "<search term>"` - what to play (song name, artist, album, playlist, genre)
   - Optional: `"media_type": "track" | "album" | "artist" | "playlist" | "radio"` - helps narrow search
   - Optional: `"artist": "<artist name>"` - filter by artist
   - Optional: `"album": "<album name>"` - filter by album
+
+### Queue Management
+- `queue_add_next` - Add song/album to play after current track
+  - Required: `"query": "<search term>"` - what to add
+  - Optional: `"media_type"`, `"artist"`, `"album"` - same as play_media
+- `queue_add` - Add song/album to end of queue
+  - Required: `"query": "<search term>"` - what to add
+  - Optional: `"media_type"`, `"artist"`, `"album"` - same as play_media
+- `queue_clear` - Clear the queue and stop playback
 
 ## JSON Response Format
 
@@ -79,6 +88,21 @@ Response: [{"action": "next", "entity_id": "media_player.living_room"}]
 
 User: "lower the volume a bit"
 Response: [{"action": "volume_down", "entity_id": "media_player.living_room", "amount": 15}]
+
+User: "add this album to the queue"
+Response: [{"action": "queue_add", "entity_id": "media_player.living_room", "query": "current album", "media_type": "album"}]
+
+User: "play Stairway to Heaven next"
+Response: [{"action": "queue_add_next", "entity_id": "media_player.living_room", "query": "Stairway to Heaven", "media_type": "track"}]
+
+User: "queue up some Pink Floyd after this"
+Response: [{"action": "queue_add_next", "entity_id": "media_player.living_room", "query": "Pink Floyd", "media_type": "artist"}]
+
+User: "add Dark Side of the Moon to the end of the queue"
+Response: [{"action": "queue_add", "entity_id": "media_player.living_room", "query": "Dark Side of the Moon", "media_type": "album", "artist": "Pink Floyd"}]
+
+User: "clear the queue"
+Response: [{"action": "queue_clear", "entity_id": "media_player.living_room"}]
 
 ## Important Notes
 

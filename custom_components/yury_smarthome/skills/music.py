@@ -103,6 +103,24 @@ class Music(AbstractSkill):
                     result = await self._play_media(
                         entity_id, media_query, media_type, artist, album, qpl_flow
                     )
+                elif action == "queue_add_next":
+                    media_query = cmd.get("query")
+                    media_type = cmd.get("media_type")
+                    artist = cmd.get("artist")
+                    album = cmd.get("album")
+                    result = await self._queue_add(
+                        entity_id, media_query, media_type, artist, album, "next", qpl_flow
+                    )
+                elif action == "queue_add":
+                    media_query = cmd.get("query")
+                    media_type = cmd.get("media_type")
+                    artist = cmd.get("artist")
+                    album = cmd.get("album")
+                    result = await self._queue_add(
+                        entity_id, media_query, media_type, artist, album, "add", qpl_flow
+                    )
+                elif action == "queue_clear":
+                    result = await self._queue_clear(entity_id, qpl_flow)
                 else:
                     messages.append(f"Unknown action: {action}")
                     continue
@@ -389,6 +407,121 @@ class Music(AbstractSkill):
             return f"Could not find or play '{query}'"
         finally:
             qpl_flow.mark_subspan_end("play_media")
+
+    async def _queue_add(
+        self,
+        entity_id: str,
+        query: str | None,
+        media_type: str | None,
+        artist: str | None,
+        album: str | None,
+        enqueue_mode: str,  # "next" or "add"
+        qpl_flow: QPLFlow,
+    ) -> str:
+        """Add media to queue (next or end)."""
+        action_name = "queue_add_next" if enqueue_mode == "next" else "queue_add"
+        point = qpl_flow.mark_subspan_begin(action_name)
+        maybe(point).annotate("entity_id", entity_id)
+        maybe(point).annotate("query", query)
+        maybe(point).annotate("enqueue_mode", enqueue_mode)
+
+        try:
+            if query is None:
+                return "What would you like to add to the queue?"
+
+            config_entry = await self._get_music_assistant_config_entry()
+
+            if config_entry:
+                # Search for the media first
+                library_result = await self._search_library(
+                    config_entry, query, media_type, artist, album, qpl_flow
+                )
+                if not library_result:
+                    library_result = await self._search_global(
+                        config_entry, query, media_type, artist, album, qpl_flow
+                    )
+
+                if library_result:
+                    item = library_result["item"]
+                    found_type = library_result["type"]
+                    media_id = item.get("uri") or item.get("name")
+
+                    await self.hass.services.async_call(
+                        "music_assistant",
+                        "play_media",
+                        {
+                            "entity_id": entity_id,
+                            "media_id": media_id,
+                            "media_type": found_type,
+                            "enqueue": enqueue_mode,
+                        },
+                        blocking=True,
+                    )
+
+                    name = item.get("name", media_id)
+                    position = "next" if enqueue_mode == "next" else "to queue"
+                    self.last_actions.append(
+                        MusicAction(action_name, entity_id, media_query=media_id)
+                    )
+                    return f"Added {name} {position}"
+
+                # Fallback: try direct with query
+                await self.hass.services.async_call(
+                    "music_assistant",
+                    "play_media",
+                    {
+                        "entity_id": entity_id,
+                        "media_id": query,
+                        "enqueue": enqueue_mode,
+                    },
+                    blocking=True,
+                )
+                position = "next" if enqueue_mode == "next" else "to queue"
+                self.last_actions.append(
+                    MusicAction(action_name, entity_id, media_query=query)
+                )
+                return f"Added {query} {position}"
+            else:
+                return "Music Assistant not available for queue management"
+        except Exception:
+            _LOGGER.warning(f"Failed to add to queue: {traceback.format_exc()}")
+            return f"Could not add '{query}' to queue"
+        finally:
+            qpl_flow.mark_subspan_end(action_name)
+
+    async def _queue_clear(self, entity_id: str, qpl_flow: QPLFlow) -> str:
+        """Clear the playback queue."""
+        point = qpl_flow.mark_subspan_begin("queue_clear")
+        maybe(point).annotate("entity_id", entity_id)
+
+        try:
+            # Try media_player.clear_playlist first
+            try:
+                await self.hass.services.async_call(
+                    "media_player",
+                    "clear_playlist",
+                    {"entity_id": entity_id},
+                    blocking=True,
+                )
+                self.last_actions.append(MusicAction("queue_clear", entity_id))
+                return "Queue cleared"
+            except Exception:
+                pass
+
+            # Fallback: stop playback
+            await self.hass.services.async_call(
+                "media_player",
+                "media_stop",
+                {"entity_id": entity_id},
+                blocking=True,
+            )
+            self.last_actions.append(MusicAction("queue_clear", entity_id))
+            return "Queue cleared"
+        except Exception:
+            _LOGGER.warning(f"Failed to clear queue: {traceback.format_exc()}")
+            return "Failed to clear queue"
+        finally:
+            qpl_flow.mark_subspan_end("queue_clear")
 
     async def _get_music_assistant_config_entry(self) -> str | None:
         """Get the Music Assistant config entry ID if available."""
