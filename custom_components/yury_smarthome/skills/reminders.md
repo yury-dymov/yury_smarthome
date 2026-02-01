@@ -84,9 +84,11 @@ Recurrence (set to null if not recurring):
 - frequency: "daily", "weekly", "monthly", "yearly"
 - interval: number (e.g., 2 for "every 2 weeks")
 - byday: ["MO", "TU", "WE", "TH", "FR", "SA", "SU"] for specific weekdays
-- bymonthday: 1-31 for specific day of month
+- bymonthday: 1-31 for specific day of month, OR negative values for counting from end (-1 = last day, -2 = second to last, etc.)
 - until: "YYYY-MM-DD" or null
 - count: number or null
+
+IMPORTANT: For "last day of the month", use bymonthday: -1 (NOT 31, as that would skip months with fewer days).
 
 ## For UPDATE action:
 Use this when user wants to modify an EXISTING reminder (change time, change who to notify, rename).
@@ -152,6 +154,7 @@ CREATE:
 - "Remind us tomorrow at 6am to leave" -> {"action": "create", "summary": "leave", "target": "both", "time_spec": {"type": "absolute", "value": {"day": "tomorrow", "time": "06:00"}}, "recurrence": null}
 - "Remind her at 5pm to call dentist" -> {"action": "create", "summary": "call dentist", "target": "eugenia", "time_spec": {"type": "absolute", "value": {"day": "today", "time": "17:00"}}, "recurrence": null}
 - "Remind me every Monday at 9am about meeting" -> {"action": "create", "summary": "meeting", "target": "yury", "time_spec": {"type": "absolute", "value": {"day": "next_monday", "time": "09:00"}}, "recurrence": {"frequency": "weekly", "interval": 1, "count": null, "until": null, "byday": ["MO"], "bymonthday": null}}
+- "Remind me every last day of the month to pay rent" -> {"action": "create", "summary": "pay rent", "target": "yury", "time_spec": {"type": "absolute", "value": {"day": "tomorrow", "time": "09:00"}}, "recurrence": {"frequency": "monthly", "interval": 1, "count": null, "until": null, "byday": null, "bymonthday": -1}}
 
 UPDATE:
 - "Also remind her about the dentist" (existing: ["dentist"]) -> {"action": "update", "match_summary": "dentist", "updates": {"target": "both", "summary": null, "time_spec": null, "recurrence": null}}
